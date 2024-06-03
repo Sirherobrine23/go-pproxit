@@ -5,6 +5,7 @@ Same to playit.gg, to make more simples to connections and implementations and h
 ## Implementation
 
 - [ ] API
+  - [ ] Agent info (`/agent`)
   - [ ] Create tunnel (`/tunnel`)
   - [ ] Delete tunnel (`/tunnel/:id`)
   - [ ] Get server address to connect (`/tunnel/:id`)

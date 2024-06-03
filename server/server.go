@@ -1,13 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/google/uuid"
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
 
 type Tunnel struct {
@@ -149,8 +151,21 @@ func (com *Controller) Listen(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		buff = buff[:size]
-		tunID, exist := com.AgentRemoteExist(remote)
+		var req proto.Request
+		if err := req.Reader(bytes.NewBuffer(buff[:size])); err != nil {
+			continue
+		}
+		if req.Ping != nil {
+			buff := new(bytes.Buffer)
+			res := proto.Response{}
+			res.Pong = new(time.Time)
+			*res.Pong = time.Now()
+			if err := res.Writer(buff); err != nil {
+				continue
+			}
+			conn.WriteToUDPAddrPort(buff.Bytes(), remote)
+			continue
+		}
 	}
 	return ctx.Err()
 }
