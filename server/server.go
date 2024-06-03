@@ -3,14 +3,34 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/google/uuid"
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/api"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
+	"xorm.io/xorm"
 )
+
+type AgentDB struct {
+	ID       uuid.UUID `xorm:"'id' primary"`      // Agent ID
+	Token    []string  `xorm:"'tokens' not null"` // Tokens
+	CreateAt time.Time `xorm:"'createat' not null"`
+	UpdateAt time.Time `xorm:"'updateat' not null"`
+}
+
+type TunnelDB struct {
+	AgentID   uuid.UUID `xorm:"'agent' not null"` // Agent assined id
+	TunnelID  uuid.UUID `xorm:"'id' not null"`    // Tunnel ID
+	TunelPort uint16    `xorm:"'port' not null"`  // Port to listener
+}
 
 type Tunnel struct {
 	Proto     uint8               // 1 => TCP, 2 => UDP or 3 => Both
@@ -134,7 +154,76 @@ func (com *Controller) CloseTunnels() {
 	}
 }
 
-func (com *Controller) Listen(ctx context.Context) error {
+func (com *Controller) Listen(ctx context.Context, XormEngine *xorm.Engine) error {
+	XormEngine.CreateTables(TunnelDB{}, AgentDB{}) // Create tables
+	go func() {
+		app := fiber.New(fiber.Config{
+			ETag: false,
+			ErrorHandler: func(ctx *fiber.Ctx, err error) error {
+				code := fiber.StatusInternalServerError
+				if fiError, is := err.(*fiber.Error); is {
+					code = fiError.Code
+				}
+				ctx.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSONCharsetUTF8)
+				return ctx.Status(code).JSON(fiber.Map{"error": err.Error()})
+			},
+		})
+
+		app.Use(limiter.New(limiter.Config{
+			Max: 50,
+			Expiration: time.Second * 12,
+			LimitReached: func(c *fiber.Ctx) error {
+				return fiber.NewError(fiber.StatusTooManyRequests, "Wait seconds to make request")
+			},
+		}))
+
+		app.Use(func(c *fiber.Ctx) error {
+			req := c.Request()
+			var token uuid.UUID
+			if Auth := req.Header.Peek("Autorization"); len(Auth) > 0 && strings.HasPrefix(strings.ToLower(string(Auth)), "token") {
+				token = uuid.MustParse(strings.TrimSpace(string(Auth[5:])))
+			} else {
+				return fiber.NewError(401, "Require authetication to maneger API")
+			}
+			agentData := new(AgentDB)
+			if has, err := XormEngine.In("tokens", token.String()).Get(agentData); err != nil || !has {
+			if !has {
+					return fiber.NewError(401, "Require valid token")
+				}
+				return fiber.NewError(500, err.Error())
+			}
+			c.Locals("ApiToken", token)
+			c.Locals("AgentData", agentData)
+			return c.Next()
+		})
+
+		app.Get("/agent", func(c *fiber.Ctx) error {
+			var body api.AgentRouting
+			return json.NewEncoder(c.Status(200)).Encode(body)
+		})
+
+		tunnelApp := app.Group("/tunnel")
+		tunnelApp.Get("/", func(c *fiber.Ctx) error {
+			agentInfo := c.Locals("AgentData").(*AgentDB)
+			var Tuns []TunnelDB
+			XormEngine.In("agent", agentInfo.ID.String()).Find(&Tuns)
+			c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSONCharsetUTF8)
+			return c.Status(200).JSON(Tuns)
+		})
+
+		app.Use(func(c *fiber.Ctx) error {
+			c.Response().Header.Add("Content-Type", "application/json")
+			return json.NewEncoder(c.Status(404)).Encode(struct {
+				Path    string `json:"path"`
+				Message string `json:"message"`
+			}{
+				string(c.Request().URI().Path()),
+				"Path request not registred or is another request method",
+			})
+		})
+		go app.Listen(fmt.Sprintf(":%d", com.ControlPort))
+		app.Server().ShutdownWithContext(ctx)
+	}()
 	conn, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), com.ControlPort)))
 	if err != nil {
 		return err
