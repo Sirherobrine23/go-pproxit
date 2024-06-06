@@ -1,4 +1,4 @@
-package mut
+package bigendian
 
 import (
 	"encoding/binary"
@@ -16,6 +16,10 @@ func writeStream[T any](w io.Writer, data T) error {
 func WriteBytes[T any](w io.Writer, value T) error {
 	return binary.Write(w, binary.BigEndian, value)
 }
+func ReaderBytes[T any](r io.Reader, value T, Size uint64) error {
+	return binary.Read(r, binary.BigEndian, value)
+}
+
 func ReadBytesN(r io.Reader, Size uint64) ([]byte, error) {
 	buff := make([]byte, Size)
 	if err := binary.Read(r, binary.BigEndian, buff); err != nil {

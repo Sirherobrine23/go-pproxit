@@ -1,54 +1,110 @@
 package proto
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"time"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/mut"
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/bigendian"
+)
+
+const (
+	ReqAuth        uint64 = 1 // Request Agent Auth
+	ReqPing        uint64 = 2 // Time ping
+	ReqCloseClient uint64 = 3 // Close client
+	ReqClientData  uint64 = 4 // Send data
+	ReqEnd         uint64 = 5 // Close client and close tunnel in controller
 )
 
 var (
-	ErrNoRequestOption error = errors.New("set valid option to request to controller server")
+	ErrProtoBothNoSupported error = errors.New("protocol UDP+TCP not supported currently")
 )
 
+type AgentAuth [36]byte
+
+func (agent AgentAuth) Writer(w io.Writer) error {
+	if err := bigendian.WriteBytes(w, agent[:]); err != nil {
+		return err
+	}
+	return nil
+}
+func (agent *AgentAuth) Reader(r io.Reader) error {
+	if err := bigendian.ReaderBytes(r, agent[:], 36); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Send request to agent and wait response
 type Request struct {
-	Authentication *Agent     // Send Authencation to Control server
-	Ping           *time.Time // Send Ping to controller
+	AgentBye    bool        // Agent sending close connecting and rejecting nexts packets
+	AgentAuth   *AgentAuth  // Send agent authentication to controller
+	Ping        *time.Time  // Send ping time to controller in unix milliseconds
+	ClientClose *Client     // Close client in controller
+	DataTX      *ClientData // Recive data from agent
+}
+
+// Get Bytes from Request
+func (req Request) Wbytes() ([]byte, error) {
+	buff := new(bytes.Buffer)
+	if err := req.Writer(buff); err != nil {
+		return nil, err
+	}
+	return buff.Bytes(), nil
 }
 
 func (req Request) Writer(w io.Writer) error {
-	if req.Authentication != nil {
-		if err := mut.WriteUint32(w, Authentication); err != nil {
-			return err // Return error in write request option to auth
-		}
-		return req.Authentication.Writer(w)
-	} else if req.Ping != nil {
-		if err := mut.WriteUint32(w, PingPong); err != nil {
-			return err // Return error in write request option to send ping to controller
-		}
-		return mut.WriteInt64(w, req.Ping.UnixMilli())
-	}
-	return ErrNoRequestOption
-}
-
-func (req *Request) Reader(r io.Reader) error {
-	requestID, err := mut.ReadUint32(r)
-	if err != nil {
-		return err
-	}
-	switch requestID {
-	case Authentication:
-		req.Authentication = new(Agent)
-		return req.Authentication.Reader(r)
-	case PingPong:
-		req.Ping = new(time.Time)
-		unixMili, err := mut.ReadInt64(r)
-		if err != nil {
+	if req.AgentBye {
+		return bigendian.WriteUint64(w, ReqEnd)
+	} else if auth := req.AgentAuth; auth != nil {
+		if err := bigendian.WriteUint64(w, ReqAuth); err != nil {
 			return err
 		}
-		*req.Ping = time.UnixMilli(unixMili)
-		return nil
+		return auth.Writer(w)
+	} else if ping := req.Ping; ping != nil {
+		if err := bigendian.WriteUint64(w, ReqPing); err != nil {
+			return err
+		}
+		return bigendian.WriteInt64(w, ping.UnixMilli())
+	} else if close := req.ClientClose; close != nil {
+		if err := bigendian.WriteUint64(w, ReqCloseClient); err != nil {
+			return err
+		}
+		return close.Writer(w)
+	} else if data := req.DataTX; data != nil {
+		if err := bigendian.WriteUint64(w, ReqClientData); err != nil {
+			return err
+		}
+		return data.Writer(w)
+	}
+	return ErrInvalidBody
+}
+func (req *Request) Reader(r io.Reader) (err error) {
+	var reqID uint64
+	if reqID, err = bigendian.ReadUint64(r); err != nil {
+		return
+	}
+	if reqID == ReqEnd {
+		req.AgentBye = true
+		return
+	} else if reqID == ReqAuth {
+		req.AgentAuth = new(AgentAuth)
+		return req.AgentAuth.Reader(r)
+	} else if reqID == ReqPing {
+		var timeUnix int64
+		if timeUnix, err = bigendian.ReadInt64(r); err != nil {
+			return
+		}
+		req.Ping = new(time.Time)
+		*req.Ping = time.UnixMilli(timeUnix)
+		return
+	} else if reqID == ReqCloseClient {
+		req.ClientClose = new(Client)
+		return req.ClientClose.Reader(r)
+	} else if reqID == ReqClientData {
+		req.DataTX = new(ClientData)
+		return req.DataTX.Reader(r)
 	}
 	return ErrInvalidBody
 }

@@ -1,153 +1,106 @@
 package proto
 
 import (
-	"encoding/binary"
-	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net/netip"
 
-	"github.com/google/uuid"
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/mut"
-)
-
-var (
-	ErrInvalidBody error = errors.New("invalid body, cannot process")
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/bigendian"
 )
 
 const (
-	Unauthorized   uint32 = 1 // Request is Unauthorized and not processed
-	Authentication uint32 = 2 // Send authencation agent
-	PingPong       uint32 = 3 // Ping Request and Pong Response
-	ClientNew      uint32 = 4 // Client disconnected
-	ClientClose    uint32 = 5 // Client disconnected
-	ClientData     uint32 = 6 // Client with data
+	ProtoTCP  uint8 = 1 // TCP Protocol
+	ProtoUDP  uint8 = 2 // UDP Protocol
+	ProtoBoth uint8 = 3 // TCP+UDP Protocol
 )
 
-// Agent authencation
-type Agent struct {
-	AgentID    uuid.UUID // Agent ID
-	AgentToken string    // Agent token hex code 64 string size or 32 []byte size
-}
+var (
+	ErrInvalidBody error = errors.New("invalid body, check request/response")
+)
 
-func (agent Agent) Writer(w io.Writer) error {
-	if err := binary.Write(w, binary.BigEndian, agent.AgentID[:]); err != nil {
-		return err
-	} else if tokenBytes, err := hex.DecodeString(agent.AgentToken); err != nil {
-		return err
-	} else if err := binary.Write(w, binary.BigEndian, tokenBytes[:]); err != nil {
-		return err
-	}
-	return nil
-}
-
-// Reader agent UUID from Controller
-func (agent *Agent) Reader(r io.Reader) error {
-	if err := binary.Read(r, binary.BigEndian, agent.AgentID); err != nil {
-		return err
-	}
-	codeBuff, err := mut.ReadBytesN(r, 32)
-	if err != nil {
-		return err
-	}
-	agent.AgentToken = hex.EncodeToString(codeBuff)
-	return nil
-}
 
 type Client struct {
-	ConnectType uint8          // Client connection type 1 => TCP or 2 => UDP
-	Addr        netip.AddrPort // Client address and port
+	Client netip.AddrPort // Client address and port
+	Proto  uint8          // Protocol to close (proto.ProtoTCP, proto.ProtoUDP or proto.ProtoBoth)
 }
 
-func (client Client) Writer(w io.Writer) error {
-	if err := mut.WriteUint8(w, client.ConnectType); err != nil {
+func (close Client) Writer(w io.Writer) error {
+	addr := close.Client.Addr()
+	if err := bigendian.WriteUint8(w, close.Proto); err != nil {
 		return err
-	}
-	if client.Addr.Addr().Is6() {
-		if err := mut.WriteUint8(w, 6); err != nil {
+	} else if addr.Is4() {
+		if err := bigendian.WriteUint8(w, 4); err != nil {
 			return err
-		} else if err := mut.WriteBytes[[16]byte](w, client.Addr.Addr().As16()); err != nil {
+		} else if err := bigendian.WriteBytes(w, addr.As4()); err != nil {
 			return err
 		}
 	} else {
-		if err := mut.WriteUint8(w, 4); err != nil {
+		if err := bigendian.WriteUint8(w, 6); err != nil {
 			return err
-		} else if err := mut.WriteBytes[[4]byte](w, client.Addr.Addr().As4()); err != nil {
+		} else if err := bigendian.WriteBytes(w, addr.As16()); err != nil {
 			return err
 		}
 	}
-	return mut.WriteUint16(w, client.Addr.Port())
-}
-
-func (client *Client) Reader(r io.Reader) error {
-	connType, err := mut.ReadUint8(r)
-	if err != nil {
-		return err
-	}
-	client.ConnectType = connType
-	addrType, err := mut.ReadUint8(r)
-	if err != nil {
-		return err
-	}
-	switch addrType {
-	case 4:
-		ipAddr, err := mut.ReadBytesN(r, 4)
-		if err != nil {
-			return err
-		}
-		port, err := mut.ReadUint16(r)
-		if err != nil {
-			return err
-		}
-		client.Addr = netip.AddrPortFrom(netip.AddrFrom4([4]byte(ipAddr)), port)
-		return nil
-	case 6:
-		ipAddr, err := mut.ReadBytesN(r, 16)
-		if err != nil {
-			return err
-		}
-		port, err := mut.ReadUint16(r)
-		if err != nil {
-			return err
-		}
-		client.Addr = netip.AddrPortFrom(netip.AddrFrom4([4]byte(ipAddr)), port)
-		return nil
-	}
-	return ErrInvalidBody
-}
-
-type DataClient struct {
-	Client        // Client info
-	Size   uint64 // Data Size
-	Data   []byte // Client data for transport, 1024 is size limit
-}
-
-func (client DataClient) Writer(w io.Writer) error {
-	if len(client.Data) > 1024 {
-		return fmt.Errorf("data to transmiter is biger")
-	} else if err := client.Client.Writer(w); err != nil {
-		return err
-	} else if err := mut.WriteUint64(w, client.Size); err != nil {
-		return err
-	} else if err := mut.WriteBytes(w, client.Data[:client.Size]); err != nil {
+	if err := bigendian.WriteUint16(w, close.Client.Port()); err != nil {
 		return err
 	}
 	return nil
 }
-func (client *DataClient) Reader(r io.Reader) error {
-	if err := client.Client.Reader(r); err != nil {
+func (close *Client) Reader(r io.Reader) (err error) {
+	if close.Proto, err = bigendian.ReadUint8(r); err != nil {
+		return
+	} else if close.Proto, err = bigendian.ReadUint8(r); err != nil {
+		return
+	} else if close.Proto == ProtoBoth {
+		return ErrProtoBothNoSupported
+	}
+	var addrFamily uint8
+	var addrPort uint16
+	var ipBytes []byte
+	if addrFamily, err = bigendian.ReadUint8(r); err != nil {
+		return
+	} else if addrFamily == 4 {
+		if ipBytes, err = bigendian.ReadBytesN(r, 4); err != nil {
+			return
+		}
+	} else if addrFamily == 6 {
+		if ipBytes, err = bigendian.ReadBytesN(r, 16); err != nil {
+			return
+		}
+	}
+	if addrPort, err = bigendian.ReadUint16(r); err != nil {
+		return
+	} else if len(ipBytes) == 16 {
+		close.Client = netip.AddrPortFrom(netip.AddrFrom16([16]byte(ipBytes)), addrPort)
+	} else {
+		close.Client = netip.AddrPortFrom(netip.AddrFrom4([4]byte(ipBytes)), addrPort)
+	}
+	return
+}
+
+type ClientData struct {
+	Client Client // Client Destination
+	Size   uint64 // Data size
+	Data   []byte // Bytes to send
+}
+
+func (data ClientData) Writer(w io.Writer) error {
+	if err := data.Client.Writer(w); err != nil {
+		return err
+	} else if err := bigendian.WriteUint64(w, data.Size); err != nil {
+		return err
+	} else if _, err := w.Write(data.Data[:data.Size]); err != nil { // Write data without convert to big-endian
 		return err
 	}
-	size, err := mut.ReadUint64(r)
-	if err != nil {
-		return err
-	}
-	buff, err := mut.ReadBytesN(r, size)
-	if err != nil {
-		return err
-	}
-	client.Size = size
-	client.Data = buff[:]
 	return nil
+}
+func (data *ClientData) Reader(r io.Reader) (err error) {
+	if err = data.Client.Reader(r); err != nil {
+		return
+	} else if data.Size, err = bigendian.ReadUint64(r); err != nil {
+		return
+	} else if _, err = r.Read(data.Data[0:data.Size]); err != nil {
+		return
+	}
+	return
 }
