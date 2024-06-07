@@ -32,8 +32,8 @@ func (udpConn UdpListerner) Accept() (net.Conn, error) {
 	return data.(net.Conn), nil
 }
 
-func Listen(UdpProto, Address string) (net.Listener, error) {
-	conn, err := net.ListenUDP(UdpProto, net.UDPAddrFromAddrPort(netip.MustParseAddrPort(Address)));
+func Listen(UdpProto string, Address netip.AddrPort) (net.Listener, error) {
+	conn, err := net.ListenUDP(UdpProto, net.UDPAddrFromAddrPort(Address));
 	if err != nil {
 		return nil, err
 	}

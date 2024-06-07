@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/netip"
+	"time"
 
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/bigendian"
 )
@@ -16,15 +17,19 @@ const (
 	ResClientData   uint64 = 5 // Controller accepted data
 	ResSendAuth     uint64 = 6 // Send token to controller
 	ResAgentInfo    uint64 = 7 // Agent info
+	ResPong         uint64 = 8 // Ping response
 )
 
 type AgentInfo struct {
-	Protocol     uint8          // Proto supported (proto.ProtoTCP, proto.ProtoUDP or proto.ProtoBoth)
-	AddrPort     netip.AddrPort // request address and port
+	Protocol    uint8          // Proto supported (proto.ProtoTCP, proto.ProtoUDP or proto.ProtoBoth)
+	LitenerPort uint16         // Controller port listened
+	AddrPort    netip.AddrPort // request address and port
 }
 
 func (agent AgentInfo) Writer(w io.Writer) error {
 	if err := bigendian.WriteUint8(w, agent.Protocol); err != nil {
+		return err
+	} else if err := bigendian.WriteUint16(w, agent.LitenerPort); err != nil {
 		return err
 	}
 	addr := agent.AddrPort.Addr()
@@ -48,6 +53,8 @@ func (agent AgentInfo) Writer(w io.Writer) error {
 }
 func (agent *AgentInfo) Reader(r io.Reader) (err error) {
 	if agent.Protocol, err = bigendian.ReadUint8(r); err != nil {
+		return
+	} else if agent.LitenerPort, err = bigendian.ReadUint16(r); err != nil {
 		return
 	}
 	var addrFamily uint8
@@ -81,6 +88,7 @@ type Response struct {
 	SendAuth     bool // Send Agent token
 
 	AgentInfo *AgentInfo // Agent Info
+	Pong      *time.Time // ping response
 
 	NewClient   *Client     // Controller Accepted client
 	CloseClient *Client     // Controller end client
@@ -103,6 +111,11 @@ func (res Response) Writer(w io.Writer) error {
 		return bigendian.WriteUint64(w, ResBadRequest)
 	} else if res.SendAuth {
 		return bigendian.WriteUint64(w, ResSendAuth)
+	} else if pong := res.Pong; pong != nil {
+		if err := bigendian.WriteUint64(w, ResPong); err != nil {
+			return err
+		}
+		return bigendian.WriteInt64(w, pong.UnixMilli())
 	} else if newClient := res.NewClient; newClient != nil {
 		if err := bigendian.WriteUint64(w, ResNewClient); err != nil {
 			return err
@@ -153,6 +166,14 @@ func (res *Response) Reader(r io.Reader) error {
 	} else if resID == ResAgentInfo {
 		res.AgentInfo = new(AgentInfo)
 		return res.AgentInfo.Reader(r)
+	} else if resID == ResPong {
+		unixMil, err := bigendian.ReadInt64(r)
+		if err != nil {
+			return err
+		}
+		res.Pong = new(time.Time)
+		*res.Pong = time.UnixMilli(unixMil)
+		return nil
 	}
 
 	return ErrInvalidBody

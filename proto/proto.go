@@ -2,6 +2,7 @@ package proto
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/netip"
 
@@ -26,22 +27,22 @@ type Client struct {
 
 func (close Client) Writer(w io.Writer) error {
 	addr := close.Client.Addr()
+	if !addr.IsValid() {
+		return fmt.Errorf("invalid ip address")
+	}
+
+	var family uint8 = 6
+	if addr.Is4() {
+		family = 4
+	}
+
 	if err := bigendian.WriteUint8(w, close.Proto); err != nil {
 		return err
-	} else if addr.Is4() {
-		if err := bigendian.WriteUint8(w, 4); err != nil {
-			return err
-		} else if err := bigendian.WriteBytes(w, addr.As4()); err != nil {
-			return err
-		}
-	} else {
-		if err := bigendian.WriteUint8(w, 6); err != nil {
-			return err
-		} else if err := bigendian.WriteBytes(w, addr.As16()); err != nil {
-			return err
-		}
-	}
-	if err := bigendian.WriteUint16(w, close.Client.Port()); err != nil {
+	} else if err := bigendian.WriteUint8(w, family); err != nil {
+		return err
+	} else if err := bigendian.WriteBytes(w, addr.AsSlice()); err != nil {
+		return err
+	} else if err := bigendian.WriteUint16(w, close.Client.Port()); err != nil {
 		return err
 	}
 	return nil
@@ -49,32 +50,32 @@ func (close Client) Writer(w io.Writer) error {
 func (close *Client) Reader(r io.Reader) (err error) {
 	if close.Proto, err = bigendian.ReadUint8(r); err != nil {
 		return
-	} else if close.Proto, err = bigendian.ReadUint8(r); err != nil {
-		return
-	} else if close.Proto == ProtoBoth {
-		return ErrProtoBothNoSupported
 	}
-	var addrFamily uint8
-	var addrPort uint16
-	var ipBytes []byte
-	if addrFamily, err = bigendian.ReadUint8(r); err != nil {
-		return
-	} else if addrFamily == 4 {
-		if ipBytes, err = bigendian.ReadBytesN(r, 4); err != nil {
-			return
-		}
-	} else if addrFamily == 6 {
-		if ipBytes, err = bigendian.ReadBytesN(r, 16); err != nil {
-			return
-		}
+	family, err := bigendian.ReadUint8(r)
+	if err != nil {
+		return err
 	}
-	if addrPort, err = bigendian.ReadUint16(r); err != nil {
-		return
-	} else if len(ipBytes) == 16 {
-		close.Client = netip.AddrPortFrom(netip.AddrFrom16([16]byte(ipBytes)), addrPort)
+
+	var addr netip.Addr
+	if family == 4 {
+		buff, err := bigendian.ReadBytesN(r, 4)
+		if err != nil {
+			return err
+		}
+		addr = netip.AddrFrom4([4]byte(buff))
 	} else {
-		close.Client = netip.AddrPortFrom(netip.AddrFrom4([4]byte(ipBytes)), addrPort)
+		buff, err := bigendian.ReadBytesN(r, 16)
+		if err != nil {
+			return err
+		}
+		addr = netip.AddrFrom16([16]byte(buff))
 	}
+
+	port, err := bigendian.ReadUint16(r)
+	if err != nil {
+		return err
+	}
+	close.Client = netip.AddrPortFrom(addr, port)
 	return
 }
 
@@ -99,7 +100,10 @@ func (data *ClientData) Reader(r io.Reader) (err error) {
 		return
 	} else if data.Size, err = bigendian.ReadUint64(r); err != nil {
 		return
-	} else if _, err = r.Read(data.Data[0:data.Size]); err != nil {
+	}
+
+	data.Data = make([]byte, data.Size)
+	if _, err = r.Read(data.Data); err != nil {
 		return
 	}
 	return
