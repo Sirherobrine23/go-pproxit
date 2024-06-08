@@ -90,7 +90,7 @@ type Response struct {
 	AgentInfo *AgentInfo // Agent Info
 	Pong      *time.Time // ping response
 
-	NewClient   *Client     // Controller Accepted client
+	// NewClient   *Client     // Controller Accepted client
 	CloseClient *Client     // Controller end client
 	DataRX      *ClientData // Controller recive data from client
 }
@@ -116,11 +116,11 @@ func (res Response) Writer(w io.Writer) error {
 			return err
 		}
 		return bigendian.WriteInt64(w, pong.UnixMilli())
-	} else if newClient := res.NewClient; newClient != nil {
-		if err := bigendian.WriteUint64(w, ResNewClient); err != nil {
-			return err
-		}
-		return newClient.Writer(w)
+	// } else if newClient := res.NewClient; newClient != nil {
+	// 	if err := bigendian.WriteUint64(w, ResNewClient); err != nil {
+	// 		return err
+	// 	}
+	// 	return newClient.Writer(w)
 	} else if closeClient := res.CloseClient; closeClient != nil {
 		if err := bigendian.WriteUint64(w, ResCloseClient); err != nil {
 			return err
@@ -154,9 +154,9 @@ func (res *Response) Reader(r io.Reader) error {
 	} else if resID == ResSendAuth {
 		res.SendAuth = true
 		return nil
-	} else if resID == ResNewClient {
-		res.NewClient = new(Client)
-		return res.NewClient.Reader(r)
+	// } else if resID == ResNewClient {
+	// 	res.NewClient = new(Client)
+	// 	return res.NewClient.Reader(r)
 	} else if resID == ResCloseClient {
 		res.CloseClient = new(Client)
 		return res.CloseClient.Reader(r)

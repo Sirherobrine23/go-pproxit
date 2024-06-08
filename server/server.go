@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -35,31 +34,36 @@ type Tunnel struct {
 // Interface to server accept and reject agents sessions
 type ServerCalls interface {
 	AgentInfo(Token [36]byte) (TunnelInfo, error)
+	AgentShutdown(Token [36]byte) error
 }
 
 // Accept any agent in ramdom port
 type DefaultCall struct{}
 
-func (DefaultCall) AgentInfo(Token [36]byte) (TunnelInfo, error) {
-	var fun = func () (port uint16, err error) {
-		var a *net.TCPAddr
-		if a, err = net.ResolveTCPAddr("tcp", "localhost:0"); err == nil {
-			var l *net.TCPListener
-			if l, err = net.ListenTCP("tcp", a); err == nil {
-				defer l.Close()
-				return uint16(l.Addr().(*net.TCPAddr).Port), nil
-			}
-		}
-		return
-	}
-	port, err := fun()
+func (DefaultCall) getFreePort() (int, error) {
+	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
 	if err != nil {
-		return TunnelInfo{}, err
+		return 0, err
 	}
-	return TunnelInfo{
-		PortListen: port,
-		Proto:      proto.ProtoBoth,
-	}, nil
+
+	l, err := net.ListenTCP("tcp", addr)
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+func (DefaultCall) AgentShutdown(Token [36]byte) error { return nil }
+func (d DefaultCall) AgentInfo(Token [36]byte) (TunnelInfo, error) {
+	port, err := d.getFreePort()
+	if err == nil {
+		return TunnelInfo{
+			PortListen: uint16(port),
+			Proto:      proto.ProtoBoth,
+		}, nil
+	}
+	return TunnelInfo{}, err
 }
 
 type Server struct {
@@ -82,7 +86,6 @@ func NewServer(Calls ServerCalls) Server {
 
 // Close client and send dead to agent
 func (tun *Tunnel) Close() {
-	close(tun.SendToAgent)
 	if tun.TCPListener != nil {
 		tun.TCPListener.Close()
 	}
@@ -98,36 +101,39 @@ func (tun *Tunnel) Close() {
 		conn.Close()                // End connection
 		delete(tun.UDPClients, key) // Delete from map
 	}
+	close(tun.SendToAgent)
 }
 
 // Process UDP Connections from listerner
 func (tun *Tunnel) UDPAccepts() {
 	for {
-		conn, _ := tun.UDPListener.Accept()
-		clientAddr := netip.MustParseAddrPort(conn.RemoteAddr().String())
-		tun.TCPClients[conn.RemoteAddr().String()] = conn
-		tun.SendToAgent <- proto.Response{
-			NewClient: &proto.Client{
-				Client: clientAddr,
-				Proto: proto.ProtoUDP,
-			},
+		conn, err := tun.UDPListener.Accept()
+		if err != nil {
+			time.Sleep(time.Second)
+			continue
 		}
+		clientAddr := netip.MustParseAddrPort(conn.RemoteAddr().String())
+		tun.UDPClients[conn.RemoteAddr().String()] = conn
+		// tun.SendToAgent <- proto.Response{
+		// 	NewClient: &proto.Client{
+		// 		Client: clientAddr,
+		// 		Proto:  proto.ProtoUDP,
+		// 	},
+		// }
 
 		go func() {
 			for {
-				buff := make([]byte, 1024)
+				buff := make([]byte, proto.DataSize)
 				n, err := conn.Read(buff)
 				if err != nil {
-					if err == io.EOF {
-						tun.SendToAgent <- proto.Response{
-							CloseClient: &proto.Client{
-								Client: clientAddr,
-								Proto: proto.ProtoUDP,
-							},
-						}
-						break
+					go conn.Close()
+					tun.SendToAgent <- proto.Response{
+						CloseClient: &proto.Client{
+							Client: clientAddr,
+							Proto:  proto.ProtoUDP,
+						},
 					}
-					continue
+					break
 				}
 				tun.SendToAgent <- proto.Response{
 					DataRX: &proto.ClientData{
@@ -135,7 +141,7 @@ func (tun *Tunnel) UDPAccepts() {
 						Data: buff[:n],
 						Client: proto.Client{
 							Client: clientAddr,
-							Proto: proto.ProtoUDP,
+							Proto:  proto.ProtoUDP,
 						},
 					},
 				}
@@ -149,32 +155,31 @@ func (tun *Tunnel) TCPAccepts() {
 	for {
 		conn, err := tun.TCPListener.Accept()
 		if err != nil {
+			time.Sleep(time.Second)
 			continue
 		}
 		clientAddr := netip.MustParseAddrPort(conn.RemoteAddr().String())
 		tun.TCPClients[conn.RemoteAddr().String()] = conn
-		tun.SendToAgent <- proto.Response{
-			NewClient: &proto.Client{
-				Client: clientAddr,
-				Proto: proto.ProtoTCP,
-			},
-		}
+		// tun.SendToAgent <- proto.Response{
+		// 	NewClient: &proto.Client{
+		// 		Client: clientAddr,
+		// 		Proto:  proto.ProtoTCP,
+		// 	},
+		// }
 
 		go func() {
 			for {
-				buff := make([]byte, 1024)
+				buff := make([]byte, proto.DataSize)
 				n, err := conn.Read(buff)
 				if err != nil {
-					if err == io.EOF {
-						tun.SendToAgent <- proto.Response{
-							CloseClient: &proto.Client{
-								Client: clientAddr,
-								Proto: proto.ProtoTCP,
-							},
-						}
-						break
+					go conn.Close()
+					tun.SendToAgent <- proto.Response{
+						CloseClient: &proto.Client{
+							Client: clientAddr,
+							Proto:  proto.ProtoTCP,
+						},
 					}
-					continue
+					break
 				}
 				tun.SendToAgent <- proto.Response{
 					DataRX: &proto.ClientData{
@@ -182,7 +187,7 @@ func (tun *Tunnel) TCPAccepts() {
 						Data: buff[:n],
 						Client: proto.Client{
 							Client: clientAddr,
-							Proto: proto.ProtoTCP,
+							Proto:  proto.ProtoTCP,
 						},
 					},
 				}
@@ -192,7 +197,6 @@ func (tun *Tunnel) TCPAccepts() {
 }
 
 func (tun *Tunnel) Request(req proto.Request) {
-	var res proto.Response
 	if client := req.ClientClose; client != nil {
 		addrStr := client.Client.String()
 		if cl, exit := tun.TCPClients[addrStr]; exit && client.Proto == 1 {
@@ -204,20 +208,26 @@ func (tun *Tunnel) Request(req proto.Request) {
 		}
 		return
 	} else if data := req.DataTX; data != nil {
-		if conn, exist := tun.TCPClients[data.Client.Client.String()]; data.Client.Proto == 1 && exist {
-			if _, err := conn.Write(data.Data); err == io.EOF {
-				conn.Close()
-				delete(tun.TCPClients, data.Client.Client.String())
-				res.CloseClient = &proto.Client{Client: data.Client.Client, Proto: 1}
-				tun.SendToAgent <- res
+		var conn net.Conn = nil
+		var exist bool
+		if data.Client.Proto == proto.ProtoTCP {
+			if conn, exist = tun.TCPClients[data.Client.Client.String()]; !exist {
+				conn = nil
 			}
-		} else if conn, exist := tun.UDPClients[data.Client.Client.String()]; data.Client.Proto == 2 && exist {
-			if _, err := conn.Write(data.Data); err == io.EOF {
-				conn.Close()
-				delete(tun.TCPClients, data.Client.Client.String())
-				res.CloseClient = &proto.Client{Client: data.Client.Client, Proto: 2}
-				tun.SendToAgent <- res
+		} else if data.Client.Proto == proto.ProtoUDP {
+			if conn, exist = tun.UDPClients[data.Client.Client.String()]; !exist {
+				conn = nil
 			}
+		}
+		if conn == nil {
+			tun.SendToAgent <- proto.Response{CloseClient: client}
+			return
+		}
+
+		if _, err := conn.Write(data.Data); err != nil {
+			conn.Close()
+			delete(tun.TCPClients, data.Client.Client.String())
+			tun.SendToAgent <- proto.Response{CloseClient: client}
 		}
 		return
 	}
@@ -236,7 +246,7 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 		var res proto.Response
 		var readSize int
 		var addr netip.AddrPort
-		buffer := make([]byte, 2048)
+		buffer := make([]byte, proto.PacketSize)
 		if readSize, addr, err = conn.ReadFromUDPAddrPort(buffer); err != nil {
 			if err == io.EOF {
 				break // End controller
@@ -244,7 +254,6 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 			continue
 		}
 
-		debuglog.Printf("Controller request from %s data %+v\n", addr.String(), buffer[:readSize])
 		if err := req.Reader(bytes.NewBuffer(buffer[:readSize])); err != nil {
 			res.BadRequest = true
 			if buffer, err = res.Wbytes(); err != nil {
@@ -253,11 +262,6 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 			conn.WriteToUDPAddrPort(buffer, addr) // Send bad request to agent
 			continue                              // Continue parsing new requests
 		}
-
-		d, _ := json.Marshal(res)
-		debuglog.Println(string(d))
-		d, _ = json.Marshal(req)
-		debuglog.Println(string(d))
 
 		if ping := req.Ping; ping != nil {
 			res.Pong = new(time.Time)
@@ -269,12 +273,6 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 
 		// Process request if tunnel is authenticated
 		if tun, exist := server.Tunnels[addr.String()]; exist && tun.Authenticated {
-			if req.AgentBye {
-				tun.Close()                           // wait close clients
-				delete(server.Tunnels, addr.String()) // Delete tunnel from  tunnels list
-				continue
-			}
-			debuglog.Printf("Request from %s redirecting to tunnel", addr.String())
 			go tun.Request(req) // process request to tunnel
 			continue            // Call next message
 		}
@@ -291,33 +289,29 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 			}
 
 			go func() {
+				tun := server.Tunnels[addr.String()]
 				for {
-					if res, ok := <-server.Tunnels[addr.String()].SendToAgent; ok {
-						d,_:=json.Marshal(res)
-						debuglog.Println(string(d))
-
+					if res, ok := <-tun.SendToAgent; ok {
 						data, err := res.Wbytes()
 						if err != nil {
 							continue
 						}
 						go conn.WriteToUDPAddrPort(data, addr) // send data to agent
+						continue
 					}
+					break
 				}
 			}()
 		}
 
-		debuglog.Printf("Request from %s checking to auth", addr.String())
 		if !server.Tunnels[addr.String()].Authenticated && req.AgentAuth == nil {
-			debuglog.Printf("Request from %s rejected", addr.String())
 			res.SendAuth = true
 			data, _ := res.Wbytes()
 			conn.WriteToUDPAddrPort(data, addr)
 			continue
 		}
-		debuglog.Printf("Checking agent from %s is valid\n", addr.String())
 		info, err := server.ServerCalls.AgentInfo([36]byte(req.AgentAuth[:]))
 		if err != nil {
-			debuglog.Println(err.Error())
 			if err == ErrNoAgent {
 				// Client not found
 				res.BadRequest = true
@@ -342,7 +336,7 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 			go tun.TCPAccepts() // Make accepts new requests
 		}
 		if info.Proto == 3 || info.Proto == 2 {
-			tun.UDPListener, err = udplisterner.Listen("udp", netip.AddrPortFrom(netip.IPv4Unspecified(), info.PortListen))
+			tun.UDPListener, err = udplisterner.Listen("udp", netip.AddrPortFrom(netip.IPv4Unspecified(), info.PortListen), proto.DataSize)
 			if err != nil {
 				if tun.TCPListener != nil {
 					tun.TCPListener.Close()

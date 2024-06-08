@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package udplisterner
+package pipe
 
 import (
 	"io"
@@ -108,7 +108,7 @@ type pipe struct {
 // Reads on one end are matched with writes on the other,
 // copying data directly between the two; there is no internal
 // buffering.
-func createPipe(LocalAddress, RemoteAddress net.Addr) (net.Conn, net.Conn) {
+func CreatePipe(LocalAddress, RemoteAddress net.Addr) (net.Conn, net.Conn) {
 	cb1 := make(chan []byte)
 	cb2 := make(chan []byte)
 	cn1 := make(chan int)
@@ -129,7 +129,7 @@ func createPipe(LocalAddress, RemoteAddress net.Addr) (net.Conn, net.Conn) {
 	p2 := &pipe{
 		localAddr: LocalAddress,
 		remoteAddr: RemoteAddress,
-		
+
 		rdRx: cb2, rdTx: cn2,
 		wrTx: cb1, wrRx: cn1,
 		localDone: done2, remoteDone: done1,

@@ -14,7 +14,6 @@ const (
 	ReqPing        uint64 = 2 // Time ping
 	ReqCloseClient uint64 = 3 // Close client
 	ReqClientData  uint64 = 4 // Send data
-	ReqEnd         uint64 = 5 // Close client and close tunnel in controller
 )
 
 var (
@@ -38,7 +37,6 @@ func (agent *AgentAuth) Reader(r io.Reader) error {
 
 // Send request to agent and wait response
 type Request struct {
-	AgentBye    bool        // Agent sending close connecting and rejecting nexts packets
 	AgentAuth   *AgentAuth  // Send agent authentication to controller
 	Ping        *time.Time  // Send ping time to controller in unix milliseconds
 	ClientClose *Client     // Close client in controller
@@ -55,9 +53,7 @@ func (req Request) Wbytes() ([]byte, error) {
 }
 
 func (req Request) Writer(w io.Writer) error {
-	if req.AgentBye {
-		return bigendian.WriteUint64(w, ReqEnd)
-	} else if auth := req.AgentAuth; auth != nil {
+	if auth := req.AgentAuth; auth != nil {
 		if err := bigendian.WriteUint64(w, ReqAuth); err != nil {
 			return err
 		}
@@ -85,10 +81,7 @@ func (req *Request) Reader(r io.Reader) (err error) {
 	if reqID, err = bigendian.ReadUint64(r); err != nil {
 		return
 	}
-	if reqID == ReqEnd {
-		req.AgentBye = true
-		return
-	} else if reqID == ReqAuth {
+	if reqID == ReqAuth {
 		req.AgentAuth = new(AgentAuth)
 		return req.AgentAuth.Reader(r)
 	} else if reqID == ReqPing {

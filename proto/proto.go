@@ -13,12 +13,14 @@ const (
 	ProtoTCP  uint8 = 1 // TCP Protocol
 	ProtoUDP  uint8 = 2 // UDP Protocol
 	ProtoBoth uint8 = 3 // TCP+UDP Protocol
+
+	DataSize   uint64 = 10_000           // Default listener data recive and send
+	PacketSize uint64 = DataSize + 800 // Packet to send and recive on controller
 )
 
 var (
 	ErrInvalidBody error = errors.New("invalid body, check request/response")
 )
-
 
 type Client struct {
 	Client netip.AddrPort // Client address and port
