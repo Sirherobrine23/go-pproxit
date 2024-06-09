@@ -17,15 +17,16 @@ var (
 )
 
 type Client struct {
-	ControlAddr  netip.AddrPort      // Controller address
-	Conn         net.Conn            // Agent controller connection
-	// AgentInfo    *proto.AgentInfo    // Agent info
-	Token        proto.AgentAuth     // Agent Token
-	LastPong     *time.Time          // Last pong response
-	UDPClients   map[string]net.Conn // UDP Clients
-	TCPClients   map[string]net.Conn // TCP Clients
-	NewUDPClient chan net.Conn       // Accepts new UDP Clients
-	NewTCPClient chan net.Conn       // Accepts new TCP Clients
+	ControlAddr    netip.AddrPort      // Controller address
+	Conn           net.Conn            // Agent controller connection
+	Token          proto.AgentAuth     // Agent Token
+	ResponseBuffer uint64              // Agent Reponse Buffer size, Initial size from proto.DataSize
+	RequestBuffer  uint64              // Controller send bytes, initial size from proto.DataSize
+	LastPong       *time.Time          // Last pong response
+	UDPClients     map[string]net.Conn // UDP Clients
+	TCPClients     map[string]net.Conn // TCP Clients
+	NewUDPClient   chan net.Conn       // Accepts new UDP Clients
+	NewTCPClient   chan net.Conn       // Accepts new TCP Clients
 }
 
 func NewClient(ControlAddr netip.AddrPort, Token [36]byte) Client {
@@ -33,6 +34,9 @@ func NewClient(ControlAddr netip.AddrPort, Token [36]byte) Client {
 		ControlAddr: ControlAddr,
 		Conn:        nil,
 		Token:       Token,
+
+		ResponseBuffer: proto.DataSize,
+		RequestBuffer:  proto.DataSize,
 
 		UDPClients:   make(map[string]net.Conn),
 		TCPClients:   make(map[string]net.Conn),
@@ -57,6 +61,20 @@ func (client *Client) Close() error {
 	return nil
 }
 
+func (client Client) Recive() (res *proto.Response, err error) {
+	recBuff := make([]byte, client.ResponseBuffer+proto.PacketSize)
+	var n int
+	if n, err = client.Conn.Read(recBuff); err != nil {
+		return
+	}
+
+	res = new(proto.Response)
+	if err = res.Reader(bytes.NewBuffer(recBuff[:n])); err != nil {
+		return
+	}
+	return
+}
+
 func (client Client) Send(req proto.Request) error {
 	buff, err := req.Wbytes()
 	if err != nil {
@@ -68,27 +86,17 @@ func (client Client) Send(req proto.Request) error {
 }
 
 func (client *Client) auth() (info *proto.AgentInfo, err error) {
-	var res proto.Response
+	var res *proto.Response
 	for {
-		var buff []byte
-		if err = client.Send(proto.Request{
-			AgentAuth: &client.Token,
-		}); err != nil {
+		if err = client.Send(proto.Request{AgentAuth: &client.Token}); err != nil {
 			client.Conn.Close()
 			return
-		}
-		buff = make([]byte, proto.PacketSize)
-		var n int
-		n, err = client.Conn.Read(buff)
-		if err != nil {
+		} else if res, err = client.Recive(); err != nil {
 			client.Conn.Close()
 			return
 		}
 
-		if err = res.Reader(bytes.NewBuffer(buff[:n])); err != nil {
-			client.Conn.Close()
-			return
-		} else if res.BadRequest || res.SendAuth {
+		if res.BadRequest || res.SendAuth {
 			// Wait seconds to resend token
 			<-time.After(time.Second * 3)
 			continue // Reload auth
@@ -103,7 +111,7 @@ func (client *Client) auth() (info *proto.AgentInfo, err error) {
 	return res.AgentInfo, nil
 }
 
-// Dial and Auth agent
+// Dial and Auth agent before require call in new gorotine client.Backgroud()
 func (client *Client) Dial() (info *proto.AgentInfo, err error) {
 	if client.Conn, err = net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(client.ControlAddr)); err != nil {
 		return
@@ -114,23 +122,20 @@ func (client *Client) Dial() (info *proto.AgentInfo, err error) {
 // Watcher response from controller
 func (client *Client) Backgroud() (err error) {
 	for {
-		buff := make([]byte, proto.PacketSize)
-		n, err := client.Conn.Read(buff)
-		if err == io.EOF {
-			break
-		} else if err != nil {
+		var res *proto.Response
+		if res, err = client.Recive(); err != nil {
+			if err == io.EOF {
+				break
+			}
 			continue
 		}
 
-		var res proto.Response
-		if err = res.Reader(bytes.NewBuffer(buff[:n])); err != nil {
-			continue
+		if res.ResizeBuffer != nil {
+			client.ResponseBuffer = *res.ResizeBuffer
 		} else if res.Pong != nil {
 			client.LastPong = res.Pong
 			continue // Wait to next response
-		}
-
-		if res.BadRequest {
+		} else if res.BadRequest {
 			continue
 		} else if res.Unauthorized {
 			return ErrAgentUnathorized
@@ -145,7 +150,7 @@ func (client *Client) Backgroud() (err error) {
 				client.NewTCPClient <- toAgent // send to Accept
 				go func() {
 					for {
-						buff := make([]byte, proto.DataSize)
+						buff := make([]byte, client.RequestBuffer)
 						n, err := toClient.Read(buff)
 						if err != nil {
 							if err == io.EOF {
@@ -156,11 +161,19 @@ func (client *Client) Backgroud() (err error) {
 							}
 							continue
 						} else {
+							if client.RequestBuffer-uint64(n) == 0 {
+								client.RequestBuffer += 500
+								var req proto.Request
+								req.ResizeBuffer = new(uint64)
+								*req.ResizeBuffer = client.RequestBuffer
+								client.Send(req)
+								<-time.After(time.Microsecond)
+							}
 							go client.Send(proto.Request{
 								DataTX: &proto.ClientData{
 									Client: data.Client,
-									Size: uint64(n),
-									Data: buff[:n],
+									Size:   uint64(n),
+									Data:   buff[:n],
 								},
 							})
 						}
@@ -172,7 +185,7 @@ func (client *Client) Backgroud() (err error) {
 				client.NewUDPClient <- toAgent // send to Accept
 				go func() {
 					for {
-						buff := make([]byte, proto.DataSize)
+						buff := make([]byte, client.RequestBuffer)
 						n, err := toClient.Read(buff)
 						if err != nil {
 							if err == io.EOF {
@@ -183,11 +196,17 @@ func (client *Client) Backgroud() (err error) {
 							}
 							continue
 						} else {
+							if client.RequestBuffer-uint64(n) == 0 {
+								var req proto.Request
+								req.ResizeBuffer = new(uint64)
+								*req.ResizeBuffer = uint64(n)
+								go client.Send(req)
+							}
 							go client.Send(proto.Request{
 								DataTX: &proto.ClientData{
 									Client: data.Client,
-									Size: uint64(n),
-									Data: buff[:n],
+									Size:   uint64(n),
+									Data:   buff[:n],
 								},
 							})
 						}

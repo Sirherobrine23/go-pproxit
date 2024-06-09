@@ -8,7 +8,7 @@ import (
 )
 
 type UdpListerner struct {
-	MTU       uint64
+	MTU       func() uint64
 	udpConn   *net.UDPConn
 	clients   map[string]net.Conn
 	newClient chan any
@@ -39,7 +39,7 @@ func (udpConn UdpListerner) Accept() (net.Conn, error) {
 
 func (udp *UdpListerner) backgroud() {
 	for {
-		buffer := make([]byte, udp.MTU)
+		buffer := make([]byte, udp.MTU())
 		n, from, err := udp.udpConn.ReadFromUDP(buffer)
 		if err != nil {
 			udp.newClient <- err // Send to accept error
@@ -63,7 +63,7 @@ func (udp *UdpListerner) backgroud() {
 		go func() {
 			toListener.Write(buffer[:n]) // Write buffer to new pipe
 			for {
-				buffer := make([]byte, udp.MTU)
+				buffer := make([]byte, udp.MTU())
 				n, err := toListener.Read(buffer)
 				if err != nil {
 					toListener.Close()
@@ -76,7 +76,7 @@ func (udp *UdpListerner) backgroud() {
 	}
 }
 
-func Listen(UdpProto string, Address netip.AddrPort, MTU uint64) (net.Listener, error) {
+func Listen(UdpProto string, Address netip.AddrPort, MTU func() uint64) (net.Listener, error) {
 	conn, err := net.ListenUDP(UdpProto, net.UDPAddrFromAddrPort(Address))
 	if err != nil {
 		return nil, err

@@ -12,12 +12,12 @@ import (
 const (
 	ResUnauthorized uint64 = 1 // Request not processed and ignored
 	ResBadRequest   uint64 = 2 // Request cannot process and ignored
-	ResNewClient    uint64 = 3 // New client
-	ResCloseClient  uint64 = 4 // Controller closed connection
-	ResClientData   uint64 = 5 // Controller accepted data
-	ResSendAuth     uint64 = 6 // Send token to controller
-	ResAgentInfo    uint64 = 7 // Agent info
-	ResPong         uint64 = 8 // Ping response
+	ResCloseClient  uint64 = 3 // Controller closed connection
+	ResClientData   uint64 = 4 // Controller accepted data
+	ResSendAuth     uint64 = 5 // Send token to controller
+	ResAgentInfo    uint64 = 6 // Agent info
+	ResPong         uint64 = 7 // Ping response
+	ResResize       uint64 = 8 // Resize buffer size
 )
 
 type AgentInfo struct {
@@ -87,10 +87,10 @@ type Response struct {
 	BadRequest   bool // Controller accepted packet so cannot process Request
 	SendAuth     bool // Send Agent token
 
-	AgentInfo *AgentInfo // Agent Info
-	Pong      *time.Time // ping response
+	AgentInfo    *AgentInfo // Agent Info
+	Pong         *time.Time // ping response
+	ResizeBuffer *uint64    // Resize Agent response
 
-	// NewClient   *Client     // Controller Accepted client
 	CloseClient *Client     // Controller end client
 	DataRX      *ClientData // Controller recive data from client
 }
@@ -116,11 +116,6 @@ func (res Response) Writer(w io.Writer) error {
 			return err
 		}
 		return bigendian.WriteInt64(w, pong.UnixMilli())
-	// } else if newClient := res.NewClient; newClient != nil {
-	// 	if err := bigendian.WriteUint64(w, ResNewClient); err != nil {
-	// 		return err
-	// 	}
-	// 	return newClient.Writer(w)
 	} else if closeClient := res.CloseClient; closeClient != nil {
 		if err := bigendian.WriteUint64(w, ResCloseClient); err != nil {
 			return err
@@ -136,6 +131,11 @@ func (res Response) Writer(w io.Writer) error {
 			return err
 		}
 		return info.Writer(w)
+	} else if res.ResizeBuffer != nil {
+		if err := bigendian.WriteUint64(w, ResResize); err != nil {
+			return err
+		}
+		return bigendian.WriteUint64(w, *res.ResizeBuffer)
 	}
 	return ErrInvalidBody
 }
@@ -154,9 +154,6 @@ func (res *Response) Reader(r io.Reader) error {
 	} else if resID == ResSendAuth {
 		res.SendAuth = true
 		return nil
-	// } else if resID == ResNewClient {
-	// 	res.NewClient = new(Client)
-	// 	return res.NewClient.Reader(r)
 	} else if resID == ResCloseClient {
 		res.CloseClient = new(Client)
 		return res.CloseClient.Reader(r)
@@ -174,6 +171,12 @@ func (res *Response) Reader(r io.Reader) error {
 		res.Pong = new(time.Time)
 		*res.Pong = time.UnixMilli(unixMil)
 		return nil
+	} else if resID == ResResize {
+		var err error
+		res.ResizeBuffer = new(uint64)
+		if *res.ResizeBuffer, err = bigendian.ReadUint64(r); err != nil {
+			return err
+		}
 	}
 
 	return ErrInvalidBody

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"time"
@@ -22,13 +23,14 @@ type TunnelInfo struct {
 }
 
 type Tunnel struct {
-	Token         [36]byte            // Agent Token
-	Authenticated bool                // Agent Authenticated and avaible to recive/transmiter data
-	UDPListener   net.Listener        // Accept connections from UDP Clients
-	TCPListener   net.Listener        // Accept connections from TCP Clients
-	UDPClients    map[string]net.Conn // Current clients connected in UDP Socket
-	TCPClients    map[string]net.Conn // Current clients connected in TCP Socket
-	SendToAgent   chan proto.Response // Send data to agent
+	Token          [36]byte            // Agent Token
+	Authenticated  bool                // Agent Authenticated and avaible to recive/transmiter data
+	ResponseBuffer uint64              // Send Reponse size
+	UDPListener    net.Listener        // Accept connections from UDP Clients
+	TCPListener    net.Listener        // Accept connections from TCP Clients
+	UDPClients     map[string]net.Conn // Current clients connected in UDP Socket
+	TCPClients     map[string]net.Conn // Current clients connected in TCP Socket
+	SendToAgent    chan proto.Response // Send data to agent
 }
 
 // Interface to server accept and reject agents sessions
@@ -67,8 +69,9 @@ func (d DefaultCall) AgentInfo(Token [36]byte) (TunnelInfo, error) {
 }
 
 type Server struct {
-	Tunnels     map[string]Tunnel // Tunnels listened
-	ServerCalls ServerCalls       // Server call to auth and more
+	RequestBuffer uint64            // Request Buffer
+	Tunnels       map[string]Tunnel // Tunnels listened
+	ServerCalls   ServerCalls       // Server call to auth and more
 }
 
 // Create new server struct
@@ -79,8 +82,9 @@ func NewServer(Calls ServerCalls) Server {
 		Calls = DefaultCall{}
 	}
 	return Server{
-		Tunnels:     make(map[string]Tunnel),
-		ServerCalls: Calls,
+		RequestBuffer: proto.DataSize,
+		ServerCalls:   Calls,
+		Tunnels:       make(map[string]Tunnel),
 	}
 }
 
@@ -114,16 +118,10 @@ func (tun *Tunnel) UDPAccepts() {
 		}
 		clientAddr := netip.MustParseAddrPort(conn.RemoteAddr().String())
 		tun.UDPClients[conn.RemoteAddr().String()] = conn
-		// tun.SendToAgent <- proto.Response{
-		// 	NewClient: &proto.Client{
-		// 		Client: clientAddr,
-		// 		Proto:  proto.ProtoUDP,
-		// 	},
-		// }
 
 		go func() {
 			for {
-				buff := make([]byte, proto.DataSize)
+				buff := make([]byte, tun.ResponseBuffer)
 				n, err := conn.Read(buff)
 				if err != nil {
 					go conn.Close()
@@ -134,6 +132,14 @@ func (tun *Tunnel) UDPAccepts() {
 						},
 					}
 					break
+				}
+				if tun.ResponseBuffer-uint64(n) == 0 {
+					tun.ResponseBuffer += 500
+					res := proto.Response{}
+					res.ResizeBuffer = new(uint64)
+					*res.ResizeBuffer = tun.ResponseBuffer
+					tun.SendToAgent <- res
+					<-time.After(time.Microsecond)
 				}
 				tun.SendToAgent <- proto.Response{
 					DataRX: &proto.ClientData{
@@ -160,16 +166,9 @@ func (tun *Tunnel) TCPAccepts() {
 		}
 		clientAddr := netip.MustParseAddrPort(conn.RemoteAddr().String())
 		tun.TCPClients[conn.RemoteAddr().String()] = conn
-		// tun.SendToAgent <- proto.Response{
-		// 	NewClient: &proto.Client{
-		// 		Client: clientAddr,
-		// 		Proto:  proto.ProtoTCP,
-		// 	},
-		// }
-
 		go func() {
 			for {
-				buff := make([]byte, proto.DataSize)
+				buff := make([]byte, tun.ResponseBuffer)
 				n, err := conn.Read(buff)
 				if err != nil {
 					go conn.Close()
@@ -180,6 +179,14 @@ func (tun *Tunnel) TCPAccepts() {
 						},
 					}
 					break
+				}
+				if tun.ResponseBuffer-uint64(n) == 0 {
+					tun.ResponseBuffer += 500
+					res := proto.Response{}
+					res.ResizeBuffer = new(uint64)
+					*res.ResizeBuffer = tun.ResponseBuffer
+					tun.SendToAgent <- res
+					<-time.After(time.Microsecond)
 				}
 				tun.SendToAgent <- proto.Response{
 					DataRX: &proto.ClientData{
@@ -246,7 +253,8 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 		var res proto.Response
 		var readSize int
 		var addr netip.AddrPort
-		buffer := make([]byte, proto.PacketSize)
+		log.Println("waiting to request")
+		buffer := make([]byte, proto.PacketSize+server.RequestBuffer)
 		if readSize, addr, err = conn.ReadFromUDPAddrPort(buffer); err != nil {
 			if err == io.EOF {
 				break // End controller
@@ -336,7 +344,7 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 			go tun.TCPAccepts() // Make accepts new requests
 		}
 		if info.Proto == 3 || info.Proto == 2 {
-			tun.UDPListener, err = udplisterner.Listen("udp", netip.AddrPortFrom(netip.IPv4Unspecified(), info.PortListen), proto.DataSize)
+			tun.UDPListener, err = udplisterner.Listen("udp", netip.AddrPortFrom(netip.IPv4Unspecified(), info.PortListen), func() uint64 {return server.RequestBuffer})
 			if err != nil {
 				if tun.TCPListener != nil {
 					tun.TCPListener.Close()

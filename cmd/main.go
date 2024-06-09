@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"time"
 
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/client"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/server"
@@ -20,6 +21,7 @@ func main() {
 	var port uint16 = 5522
 	server := server.NewServer(nil)
 	go server.Listen(port)
+	time.Sleep(time.Second)
 	fmt.Printf("Server listen on :%d\n", port)
 
 	go func() {

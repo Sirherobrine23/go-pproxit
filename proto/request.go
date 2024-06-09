@@ -14,6 +14,7 @@ const (
 	ReqPing        uint64 = 2 // Time ping
 	ReqCloseClient uint64 = 3 // Close client
 	ReqClientData  uint64 = 4 // Send data
+	ReqResize      uint64 = 5 // Resize request buffer
 )
 
 var (
@@ -37,10 +38,11 @@ func (agent *AgentAuth) Reader(r io.Reader) error {
 
 // Send request to agent and wait response
 type Request struct {
-	AgentAuth   *AgentAuth  // Send agent authentication to controller
-	Ping        *time.Time  // Send ping time to controller in unix milliseconds
-	ClientClose *Client     // Close client in controller
-	DataTX      *ClientData // Recive data from agent
+	AgentAuth    *AgentAuth  // Send agent authentication to controller
+	Ping         *time.Time  // Send ping time to controller in unix milliseconds
+	ClientClose  *Client     // Close client in controller
+	DataTX       *ClientData // Recive data from agent
+	ResizeBuffer *uint64     // Resize request buffer
 }
 
 // Get Bytes from Request
@@ -73,6 +75,11 @@ func (req Request) Writer(w io.Writer) error {
 			return err
 		}
 		return data.Writer(w)
+	} else if req.ResizeBuffer != nil {
+		if err := bigendian.WriteUint64(w, ReqResize); err != nil {
+			return err
+		}
+		return bigendian.WriteUint64(w, *req.ResizeBuffer)
 	}
 	return ErrInvalidBody
 }
@@ -98,6 +105,10 @@ func (req *Request) Reader(r io.Reader) (err error) {
 	} else if reqID == ReqClientData {
 		req.DataTX = new(ClientData)
 		return req.DataTX.Reader(r)
+	} else if reqID == ReqResize {
+		req.ResizeBuffer = new(uint64)
+		*req.ResizeBuffer, err = bigendian.ReadUint64(r)
+		return
 	}
 	return ErrInvalidBody
 }

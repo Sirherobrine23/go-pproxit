@@ -14,8 +14,9 @@ const (
 	ProtoUDP  uint8 = 2 // UDP Protocol
 	ProtoBoth uint8 = 3 // TCP+UDP Protocol
 
-	DataSize   uint64 = 10_000           // Default listener data recive and send
-	PacketSize uint64 = DataSize + 800 // Packet to send and recive on controller
+	DataSize       uint64 = 10_000                // Default listener data recive and send
+	PacketSize     uint64 = 800                   // Packet to without data only requests and response headers
+	PacketDataSize uint64 = DataSize + PacketSize // Header and Data request/response
 )
 
 var (
