@@ -2,65 +2,26 @@ package main
 
 import (
 	"fmt"
-	"io"
-	"log"
-	"net"
-	"net/netip"
 	"os"
-	"os/signal"
-	"time"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/client"
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/server"
+	"github.com/urfave/cli/v2"
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/cmd/client"
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/cmd/server"
 )
 
+var description string = `pproxit is a proxy that allows anyone to host a server without port forwarding. We use tunneling. Only the server needs to run the program, not every player!`
 func main() {
-	cctrl := make(chan os.Signal, 1)
-	signal.Notify(cctrl, os.Interrupt)
-
-	var port uint16 = 5522
-	server := server.NewServer(nil)
-	go server.Listen(port)
-	time.Sleep(time.Second)
-	fmt.Printf("Server listen on :%d\n", port)
-
-	go func() {
-		client := client.NewClient(netip.AddrPortFrom(netip.IPv6Loopback(), port), [36]byte{})
-		info, err := client.Dial()
-		if err != nil {
-			panic(err)
-		}
-		go client.Backgroud() // Recive data
-		fmt.Printf("Client remote: %s\n", client.Conn.RemoteAddr().String())
-		fmt.Printf("Client Listened on %d\n", info.LitenerPort)
-
-		localConnect := "127.0.0.1:5201"
-		for {
-			select {
-			case tcp := <-client.NewTCPClient:
-				go func()  {
-					conn, err := net.Dial("tcp", localConnect)
-					if err != nil {
-						log.Println(err)
-						return
-					}
-					go io.Copy(conn, tcp)
-					go io.Copy(tcp, conn)
-				}()
-			case udp := <-client.NewUDPClient:
-				go func ()  {
-					conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.MustParseAddrPort(localConnect)))
-					if err != nil {
-						log.Println(err)
-						return
-					}
-					go io.Copy(conn, udp)
-					go io.Copy(udp, conn)
-				}()
-			}
-		}
-	}()
-
-	<-cctrl
-	fmt.Println("Closing controller")
+	app := cli.NewApp()
+	app.Name = "pproxit"
+	app.Description = description
+	app.EnableBashCompletion = true
+	app.HideHelpCommand = true
+	app.Commands = []*cli.Command{
+		&server.CmdServer,
+		&client.CmdClient,
+	}
+	if err := app.Run(os.Args); err != nil {
+		fmt.Fprintf(app.ErrWriter, "Error: %v\n", err)
+		os.Exit(1)
+	}
 }

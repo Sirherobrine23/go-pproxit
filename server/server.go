@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -37,35 +38,6 @@ type Tunnel struct {
 type ServerCalls interface {
 	AgentInfo(Token [36]byte) (TunnelInfo, error)
 	AgentShutdown(Token [36]byte) error
-}
-
-// Accept any agent in ramdom port
-type DefaultCall struct{}
-
-func (DefaultCall) getFreePort() (int, error) {
-	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
-	if err != nil {
-		return 0, err
-	}
-
-	l, err := net.ListenTCP("tcp", addr)
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
-}
-
-func (DefaultCall) AgentShutdown(Token [36]byte) error { return nil }
-func (d DefaultCall) AgentInfo(Token [36]byte) (TunnelInfo, error) {
-	port, err := d.getFreePort()
-	if err == nil {
-		return TunnelInfo{
-			PortListen: uint16(port),
-			Proto:      proto.ProtoBoth,
-		}, nil
-	}
-	return TunnelInfo{}, err
 }
 
 type Server struct {
@@ -322,7 +294,7 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 		if err != nil {
 			if err == ErrNoAgent {
 				// Client not found
-				res.BadRequest = true
+				res.Unauthorized = true
 			} else {
 				// Cannot process request resend
 				res.SendAuth = true
@@ -344,7 +316,7 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 			go tun.TCPAccepts() // Make accepts new requests
 		}
 		if info.Proto == 3 || info.Proto == 2 {
-			tun.UDPListener, err = udplisterner.Listen("udp", netip.AddrPortFrom(netip.IPv4Unspecified(), info.PortListen), func() uint64 {return server.RequestBuffer})
+			tun.UDPListener, err = udplisterner.Listen("udp", fmt.Sprintf("0.0.0.0:%d", info.PortListen))
 			if err != nil {
 				if tun.TCPListener != nil {
 					tun.TCPListener.Close()

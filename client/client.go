@@ -2,8 +2,10 @@ package client
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"time"
@@ -72,6 +74,8 @@ func (client Client) Recive() (res *proto.Response, err error) {
 	if err = res.Reader(bytes.NewBuffer(recBuff[:n])); err != nil {
 		return
 	}
+	d,_:=json.Marshal(res)
+	log.Println(string(d))
 	return
 }
 
