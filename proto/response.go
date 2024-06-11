@@ -177,6 +177,7 @@ func (res *Response) Reader(r io.Reader) error {
 		if *res.ResizeBuffer, err = bigendian.ReadUint64(r); err != nil {
 			return err
 		}
+		return nil
 	}
 
 	return ErrInvalidBody

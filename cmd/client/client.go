@@ -56,30 +56,21 @@ var CmdClient = cli.Command{
 		}
 		fmt.Printf("Connected, Remote port: %d\n", info.LitenerPort)
 		fmt.Printf("           Remote address: %s\n", info.AddrPort.String())
-		go client.Backgroud()
-
 		localConnect := ctx.String("dial")
 		for {
+			var conn, dial net.Conn
 			select {
-			case tcp := <-client.NewTCPClient:
-				go func()  {
-					conn, err := net.Dial("tcp", localConnect)
-					if err != nil {
-						return
-					}
-					go io.Copy(conn, tcp)
-					go io.Copy(tcp, conn)
-				}()
-			case udp := <-client.NewUDPClient:
-				go func ()  {
-					conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.MustParseAddrPort(localConnect)))
-					if err != nil {
-						return
-					}
-					go io.Copy(conn, udp)
-					go io.Copy(udp, conn)
-				}()
+			case conn = <-client.NewTCPClient:
+				if dial, err = net.Dial("tcp", localConnect); err != nil {
+					continue
+				}
+			case conn = <-client.NewUDPClient:
+				if dial, err = net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.MustParseAddrPort(localConnect))); err != nil {
+					continue
+				}
 			}
+			go io.Copy(conn, dial)
+			go io.Copy(dial, conn)
 		}
 	},
 }

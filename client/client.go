@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"reflect"
 	"time"
 
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/pipe"
@@ -67,6 +68,13 @@ func (client Client) Recive() (res *proto.Response, err error) {
 	recBuff := make([]byte, client.ResponseBuffer+proto.PacketSize)
 	var n int
 	if n, err = client.Conn.Read(recBuff); err != nil {
+		if opErr, isOp := err.(*net.OpError); isOp {
+			log.Println()
+			err = opErr.Err
+			if reflect.TypeOf(opErr.Err).String() == "poll.errNetClosing" {
+				return nil, io.EOF
+			}
+		}
 		return
 	}
 
@@ -89,7 +97,9 @@ func (client Client) Send(req proto.Request) error {
 	return nil
 }
 
+// Send token to controller to connect to tunnel
 func (client *Client) auth() (info *proto.AgentInfo, err error) {
+	attemps := 0
 	var res *proto.Response
 	for {
 		if err = client.Send(proto.Request{AgentAuth: &client.Token}); err != nil {
@@ -103,6 +113,10 @@ func (client *Client) auth() (info *proto.AgentInfo, err error) {
 		if res.BadRequest || res.SendAuth {
 			// Wait seconds to resend token
 			<-time.After(time.Second * 3)
+			if attemps++; attemps >= 25 {
+				err = ErrAgentUnathorized // Cannot auth
+				return
+			}
 			continue // Reload auth
 		} else if res.Unauthorized {
 			// Close tunnel and break loop-de-loop 🦔
@@ -115,19 +129,29 @@ func (client *Client) auth() (info *proto.AgentInfo, err error) {
 	return res.AgentInfo, nil
 }
 
-// Dial and Auth agent before require call in new gorotine client.Backgroud()
+// Dial to controller and auto accept new responses from controller
 func (client *Client) Dial() (info *proto.AgentInfo, err error) {
 	if client.Conn, err = net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(client.ControlAddr)); err != nil {
 		return
 	}
+	go client.backgroud()
 	return client.auth()
 }
 
 // Watcher response from controller
-func (client *Client) Backgroud() (err error) {
+func (client *Client) backgroud() (err error) {
+	go func(){
+		for {
+			var current = time.Now()
+			client.Send(proto.Request{Ping: &current})
+			<-time.After(time.Second * 5)
+		}
+	}()
 	for {
+		log.Println("waiting response from controller")
 		var res *proto.Response
 		if res, err = client.Recive(); err != nil {
+			log.Println(err.Error())
 			if err == io.EOF {
 				break
 			}

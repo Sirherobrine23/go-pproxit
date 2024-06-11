@@ -85,7 +85,7 @@ func (close *Client) Reader(r io.Reader) (err error) {
 type ClientData struct {
 	Client Client // Client Destination
 	Size   uint64 // Data size
-	Data   []byte // Bytes to send
+	Data   []byte `json:"-"` // Bytes to send
 }
 
 func (data ClientData) Writer(w io.Writer) error {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"net"
+	"time"
 
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
@@ -23,7 +24,7 @@ func getFreePort() (int, error) {
 // Accept any agent in ramdom port
 type DefaultCall struct{}
 
-func (DefaultCall) AgentShutdown(Token [36]byte) error { return nil }
+func (DefaultCall) RegisterPing(serverTime, clientTime time.Time, Token [36]byte) error { return nil }
 func (d DefaultCall) AgentInfo(Token [36]byte) (TunnelInfo, error) {
 	port, err := getFreePort()
 	if err == nil {

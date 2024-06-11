@@ -2,15 +2,15 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/netip"
 	"time"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner"
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner/v2"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
 
@@ -37,13 +37,23 @@ type Tunnel struct {
 // Interface to server accept and reject agents sessions
 type ServerCalls interface {
 	AgentInfo(Token [36]byte) (TunnelInfo, error)
-	AgentShutdown(Token [36]byte) error
+	RegisterPing(serverTime, clientTime time.Time, Token [36]byte) error
 }
 
 type Server struct {
+	Conn *net.UDPConn // Local listen
 	RequestBuffer uint64            // Request Buffer
 	Tunnels       map[string]Tunnel // Tunnels listened
 	ServerCalls   ServerCalls       // Server call to auth and more
+}
+
+func (server Server) Send(to netip.AddrPort, res proto.Response) error {
+	buff, err := res.Wbytes()
+	if err != nil {
+		return err
+	}
+	_, err = server.Conn.WriteToUDPAddrPort(buff, to)
+	return err
 }
 
 // Create new server struct
@@ -62,12 +72,8 @@ func NewServer(Calls ServerCalls) Server {
 
 // Close client and send dead to agent
 func (tun *Tunnel) Close() {
-	if tun.TCPListener != nil {
-		tun.TCPListener.Close()
-	}
-	if tun.UDPListener != nil {
-		tun.UDPListener.Close()
-	}
+	tun.TCPListener.Close()
+	tun.UDPListener.Close()
 
 	for key, conn := range tun.UDPClients {
 		conn.Close()                // End connection
@@ -218,11 +224,11 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 	if conn, err = net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), ControllerPort))); err != nil {
 		return
 	}
+	server.Conn = conn
 
 	for {
 		var err error
 		var req proto.Request
-		var res proto.Response
 		var readSize int
 		var addr netip.AddrPort
 		log.Println("waiting to request")
@@ -235,24 +241,22 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 		}
 
 		if err := req.Reader(bytes.NewBuffer(buffer[:readSize])); err != nil {
-			res.BadRequest = true
-			if buffer, err = res.Wbytes(); err != nil {
-				continue // not send bad request to agent
-			}
-			conn.WriteToUDPAddrPort(buffer, addr) // Send bad request to agent
+			log.Printf("From %s, cannot reader buffer: %s", addr.String(), err.Error())
+			go server.Send(addr, proto.Response{BadRequest: true}) // Send bad request to agent
 			continue                              // Continue parsing new requests
 		}
 
-		if ping := req.Ping; ping != nil {
-			res.Pong = new(time.Time)
-			*res.Pong = time.Now()
-			data, _ := res.Wbytes()
-			conn.WriteToUDPAddrPort(data, addr)
-			continue
-		}
+		d,_ := json.Marshal(req)
+		log.Printf("From %s: %s", addr.String(), string(d))
 
 		// Process request if tunnel is authenticated
 		if tun, exist := server.Tunnels[addr.String()]; exist && tun.Authenticated {
+			if ping := req.Ping; ping != nil {
+				current := time.Now()
+				go server.ServerCalls.RegisterPing(current, *req.Ping, tun.Token)
+				go server.Send(addr, proto.Response{Pong: &current})
+				continue
+			}
 			go tun.Request(req) // process request to tunnel
 			continue            // Call next message
 		}
@@ -285,45 +289,53 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 		}
 
 		if !server.Tunnels[addr.String()].Authenticated && req.AgentAuth == nil {
-			res.SendAuth = true
-			data, _ := res.Wbytes()
-			conn.WriteToUDPAddrPort(data, addr)
+			go server.Send(addr, proto.Response{SendAuth: true})
 			continue
 		}
+
 		info, err := server.ServerCalls.AgentInfo([36]byte(req.AgentAuth[:]))
 		if err != nil {
 			if err == ErrNoAgent {
 				// Client not found
-				res.Unauthorized = true
+				go server.Send(addr, proto.Response{Unauthorized: true})
 			} else {
 				// Cannot process request resend
-				res.SendAuth = true
+				go server.Send(addr, proto.Response{SendAuth: true})
 			}
-			data, _ := res.Wbytes()
-			conn.WriteToUDPAddrPort(data, addr)
 			continue
 		}
 
+		// Close tunnels tokens listened
+		for ared, tun := range server.Tunnels {
+			if ared == addr.String() {
+				continue
+			} else if bytes.Equal(tun.Token[:], req.AgentAuth[:]) {
+				log.Printf("Closing agent %s", ared)
+				tun.Close()
+				delete(server.Tunnels, ared)
+			}
+		}
+
 		tun := server.Tunnels[addr.String()]
+		tun.Token = *req.AgentAuth // Set token to tunnel
+
 		if info.Proto == 3 || info.Proto == 1 {
 			tun.TCPListener, err = net.ListenTCP("tcp", net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), info.PortListen)))
 			if err != nil {
-				res.BadRequest = true
-				data, _ := res.Wbytes()
-				conn.WriteToUDPAddrPort(data, addr)
+				log.Printf("TCP Listener from %s: %s", addr.String(), err.Error())
+				go server.Send(addr, proto.Response{BadRequest: true})
 				continue
 			}
 			go tun.TCPAccepts() // Make accepts new requests
 		}
 		if info.Proto == 3 || info.Proto == 2 {
-			tun.UDPListener, err = udplisterner.Listen("udp", fmt.Sprintf("0.0.0.0:%d", info.PortListen))
+			tun.UDPListener, err = udplisterner.Listen("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), info.PortListen)))
 			if err != nil {
+				log.Printf("UDP Listener from %s: %s", addr.String(), err.Error())
 				if tun.TCPListener != nil {
 					tun.TCPListener.Close()
 				}
-				res.BadRequest = true
-				data, _ := res.Wbytes()
-				conn.WriteToUDPAddrPort(data, addr)
+				go server.Send(addr, proto.Response{BadRequest: true})
 				continue
 			}
 			go tun.UDPAccepts() // Make accepts new requests
@@ -331,13 +343,11 @@ func (server *Server) Listen(ControllerPort uint16) (err error) {
 		tun.Authenticated = true
 		server.Tunnels[addr.String()] = tun
 
-		res.AgentInfo = new(proto.AgentInfo)
-		res.AgentInfo.Protocol = info.Proto
-		res.AgentInfo.LitenerPort = info.PortListen
-		res.AgentInfo.AddrPort = addr
-
-		data, _ := res.Wbytes()
-		conn.WriteToUDPAddrPort(data, addr)
+		AgentInfo := new(proto.AgentInfo)
+		AgentInfo.Protocol = info.Proto
+		AgentInfo.LitenerPort = info.PortListen
+		AgentInfo.AddrPort = addr
+		go server.Send(addr, proto.Response{AgentInfo: AgentInfo})
 		continue
 	}
 	return
