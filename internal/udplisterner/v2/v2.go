@@ -1,111 +1,97 @@
+/*
+Lidar com pacotes de varios tamanhos
+*/
 package udplisterner
 
 import (
-	"io"
+	"bufio"
+	"bytes"
 	"log"
 	"net"
+	"net/netip"
+	"sync"
 )
 
-type client struct {
-	ClientConn            *pipe
-	rdRx, wrTx            chan []byte
-	rdTx, wrRx            chan int
-	localDone, remoteDone chan struct{}
+type Udplisterner struct {
+	Log            *log.Logger  // Write request to Debug
+	conn           *net.UDPConn // root listen connection
+	newClientErr   chan error
+	newClient      chan net.Conn
+	currentClients map[string]*bufio.ReadWriter
+	locker         sync.RWMutex
 }
 
-type UDPListener struct {
-	conn     *net.UDPConn      // Root listener
-	toAccept chan any          // Return accept connections
-	clients  map[string]client // Clients
-}
-
-// Get address from UDP Listener
-func (lis UDPListener) Addr() net.Addr {
-	return lis.conn.LocalAddr()
-}
-
-func (lis *UDPListener) Close() error {
-	for _, client := range lis.clients {
-		client.localDone <- struct{}{} // Close and wait response, ignoraing errors
-	}
-	close(lis.toAccept) // end channel
-	return lis.conn.Close()
-}
-
-func (lis UDPListener) Accept() (net.Conn, error) {
-	if rec, ok := <-lis.toAccept; ok {
-		if err, isErr := rec.(error); isErr {
-			return nil, err
+func (list *Udplisterner) handle() {
+	defer list.conn.Close()
+	localAddr := list.conn.LocalAddr().String()
+	var readBuff int = 1024 * 8
+	for {
+		buff := make([]byte, readBuff)
+		list.Log.Printf("%s: Reading from %d bytes\n", localAddr, readBuff)
+		n, from, err := list.conn.ReadFromUDPAddrPort(buff)
+		if err != nil {
+			list.Log.Printf("closing readers, err: %s", err.Error())
+			list.newClientErr <- err
+			break
+		} else if n == readBuff {
+			readBuff += 1024 // Grow buffer size
+			list.Log.Printf("%s: Growing from %d to %d\n", localAddr, readBuff-1024, readBuff)
 		}
-		return rec.(net.Conn), nil
+
+		list.locker.RLock() // Read locker
+		if client, ok := list.currentClients[from.String()]; ok {
+			list.Log.Printf("%s: Caching %d bytes to %s\n", localAddr, n, from.String())
+			client.Write(buff[:n])
+			list.locker.RUnlock() // Unlocker
+			continue
+		}
+		list.Log.Printf("%s: New client %s\n", localAddr, from.String())
+		list.locker.RUnlock() // Unlocker
+		list.locker.Lock()    // Locker map
+		bufferd := bufio.NewReadWriter(bufio.NewReader(bytes.NewReader(buff[:n])), &bufio.Writer{})
+		clientConn := NewConn(list.conn, netip.MustParseAddrPort(list.conn.LocalAddr().String()), from, bufferd)
+		list.currentClients[from.String()] = bufferd
+		list.locker.Unlock() // Unlocker map
+		go func() {
+			list.newClient <- clientConn
+			<-clientConn.(*PipeConn).closedChan
+		}()
 	}
-	return nil, io.ErrClosedPipe
 }
 
-func Listen(network string, address *net.UDPAddr) (net.Listener, error) {
-	var conn *net.UDPConn
-	var err error
-	if conn, err = net.ListenUDP(network, address); err != nil {
+func Listen(network string, laddr netip.AddrPort) (net.Listener, error) {
+	return Listener(network, net.UDPAddrFromAddrPort(laddr))
+}
+
+func Listener(network string, laddr *net.UDPAddr) (net.Listener, error) {
+	conn, err := net.ListenUDP(network, laddr)
+	if err != nil {
 		return nil, err
 	}
-	accepts := make(chan any)
-	listen := &UDPListener{conn, accepts, make(map[string]client)}
-	go func() {
-		var maxSize int = 1024
-		for {
-			log.Println("waiting request")
-			buff := make([]byte, maxSize)
-			n, from, err := conn.ReadFromUDPAddrPort(buff)
-			if err != nil {
-				break // end loop-de-loop
-			}
-			log.Printf("Request from: %s", from.String())
-			if tun, ok := listen.clients[from.String()]; ok {
-				tun.wrTx <- buff[:n]
-				<-tun.rdTx // but ignore
-				continue
-			}
-			go func() {
-				rdRx := make(chan []byte)
-				wrTx := make(chan []byte)
-				rdTx := make(chan int)
-				wrRx := make(chan int)
-				localDone := make(chan struct{})
-				remoteDone := make(chan struct{})
-				newClient := client{
-					rdRx: rdRx, rdTx: rdTx,
-					wrTx: wrTx, wrRx: wrRx,
-					localDone: localDone, remoteDone: remoteDone,
-					ClientConn: &pipe{
-						localAddr:  conn.LocalAddr(),
-						remoteAddr: net.UDPAddrFromAddrPort(from),
-
-						rdRx: wrTx, rdTx: wrRx,
-						wrTx: rdRx, wrRx: rdTx,
-						localDone: remoteDone, remoteDone: localDone,
-						readDeadline:  makePipeDeadline(),
-						writeDeadline: makePipeDeadline(),
-					},
-				}
-				listen.clients[from.String()] = newClient // Set to clients map
-				listen.toAccept <- newClient.ClientConn   // Send to accept
-				newClient.wrTx <- buff[:n]
-				<-newClient.rdTx // but ignore
-				for {
-					if data, ok := <-rdRx; ok {
-						n, err := conn.WriteToUDPAddrPort(data, from)
-						if err != nil {
-							localDone <- struct{}{}
-							<-remoteDone // wait remote
-							break        // end
-						}
-						wrRx <- n // send write data
-						continue
-					}
-					break
-				}
-			}()
-		}
-	}()
+	listen := &Udplisterner{
+		conn: conn,
+	}
+	go listen.handle()
 	return listen, nil
+}
+
+func (c *Udplisterner) Addr() net.Addr { return c.conn.LocalAddr() }
+func (c *Udplisterner) Close() error {
+	c.conn.Close()
+	c.locker.Lock()
+	defer c.locker.Unlock()
+	for key := range c.currentClients {
+		delete(c.currentClients, key)
+	}
+	return nil
+}
+func (c *Udplisterner) Accept() (net.Conn, error) {
+	select {
+	case client := <-c.newClient:
+		return client, nil
+	case err := <-c.newClientErr:
+		return nil, err
+	default:
+		return nil, net.ErrClosed
+	}
 }

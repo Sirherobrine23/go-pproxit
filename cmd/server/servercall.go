@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/netip"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -23,11 +24,12 @@ type User struct {
 }
 
 type Tun struct {
-	ID         int64    `xorm:"pk"`                  // Tunnel ID
-	User       int64    `xorm:"notnull"`             // Agent ID
-	Token      [36]byte `xorm:"blob notnull unique"` // Tunnel Token
-	Proto      uint8    `xorm:"default 3"`           // Proto accept
-	PortListen uint16   // Port listen agent
+	ID        int64    `xorm:"pk"`                  // Tunnel ID
+	User      int64    `xorm:"notnull"`             // Agent ID
+	Token     [36]byte `xorm:"blob notnull unique"` // Tunnel Token
+	Proto     uint8    `xorm:"default 3"`           // Proto accept
+	TPCListen uint16   // Port listen TCP agent
+	UDPListen uint16   // Port listen UDP agent
 }
 
 type Ping struct {
@@ -51,35 +53,29 @@ func NewCall(DBConn string) (call *serverCalls, err error) {
 	return
 }
 
-func (call serverCalls) AgentInfo(Token [36]byte) (server.TunnelInfo, error) {
+type TunCallbcks struct {
+	tunID      int64
+	XormEngine *xorm.Engine
+}
+
+func (tun *TunCallbcks) BlockedAddr(AddrPort netip.Addr) bool                    { return false }
+func (tun *TunCallbcks) AgentPing(agent, server time.Time)                       {}
+func (tun *TunCallbcks) AgentShutdown(onTime time.Time)                          {}
+func (tun *TunCallbcks) RegisterRX(client netip.AddrPort, Size int, Proto uint8) {}
+func (tun *TunCallbcks) RegisterTX(client netip.AddrPort, Size int, Proto uint8) {}
+
+func (caller *serverCalls) AgentAuthentication(Token [36]byte) (server.TunnelInfo, error) {
 	var tun = Tun{Token: Token}
-	if ok, err := call.XormEngine.Get(&tun); err != nil || !ok {
+	if ok, err := caller.XormEngine.Get(&tun); err != nil || !ok {
 		if !ok {
-			return server.TunnelInfo{}, server.ErrNoAgent
+			return server.TunnelInfo{}, server.ErrAuthAgentFail
 		}
 		return server.TunnelInfo{}, err
 	}
 	return server.TunnelInfo{
-		PortListen: tun.PortListen,
-		Proto:      tun.Proto,
+		Proto:     tun.Proto,
+		TCPPort:   tun.TPCListen,
+		UDPPort:   tun.UDPListen,
+		Callbacks: &TunCallbcks{tunID: tun.ID, XormEngine: caller.XormEngine},
 	}, nil
-}
-
-func (call serverCalls) RegisterPing(serverTime, clientTime time.Time, Token [36]byte) error {
-	var tun = Tun{Token: Token}
-	if ok, err := call.XormEngine.Get(&tun); err != nil {
-		return err
-	} else if !ok {
-		return server.ErrNoAgent
-	}
-
-	ping := new(Ping)
-	ping.TunID = tun.ID
-	ping.ServerTime = serverTime
-	ping.AgentTime = clientTime
-	_, err := call.XormEngine.InsertOne(ping)
-	if err != nil {
-		return err
-	}
-	return nil
 }

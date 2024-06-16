@@ -10,6 +10,7 @@ import (
 )
 
 var description string = `pproxit is a proxy that allows anyone to host a server without port forwarding. We use tunneling. Only the server needs to run the program, not every player!`
+
 func main() {
 	app := cli.NewApp()
 	app.Name = "pproxit"

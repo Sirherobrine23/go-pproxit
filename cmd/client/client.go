@@ -13,21 +13,21 @@ import (
 )
 
 var CmdClient = cli.Command{
-	Name: "client",
+	Name:    "client",
 	Aliases: []string{"c"},
-	Usage: "connect to controller server and bind new requests to local port",
+	Usage:   "connect to controller server and bind new requests to local port",
 	Flags: []cli.Flag{
 		&cli.StringFlag{
-			Name: "url",
+			Name:     "url",
 			Required: true,
-			Aliases: []string{"host", "u"},
-			Usage: `host string to connect to controller, example: "example.com:5522"`,
+			Aliases:  []string{"host", "u"},
+			Usage:    `host string to connect to controller, example: "example.com:5522"`,
 		},
 		&cli.StringFlag{
-			Name: "token",
+			Name:     "token",
 			Required: true,
-			Usage: "agent token",
-			Aliases: []string{"t"},
+			Usage:    "agent token",
+			Aliases:  []string{"t"},
 			Action: func(ctx *cli.Context, s string) error {
 				if _, err := uuid.Parse(s); err == nil {
 					return nil
@@ -38,10 +38,10 @@ var CmdClient = cli.Command{
 			},
 		},
 		&cli.StringFlag{
-			Name: "dial",
+			Name:     "dial",
 			Required: true,
-			Usage: `dial connection, default is "localhost:80"`,
-			Aliases: []string{"d"},
+			Usage:    `dial connection, default is "localhost:80"`,
+			Aliases:  []string{"d"},
 		},
 	},
 	Action: func(ctx *cli.Context) (err error) {
@@ -49,28 +49,34 @@ var CmdClient = cli.Command{
 		if addr, err = netip.ParseAddrPort(ctx.String("url")); err != nil {
 			return
 		}
-		client := client.NewClient(addr, [36]byte([]byte(ctx.String("token"))))
-		var info *proto.AgentInfo
-		if info, err = client.Dial(); err != nil {
+		client, err := client.CreateClient([]netip.AddrPort{addr}, [36]byte([]byte(ctx.String("token"))))
+		if err != nil {
 			return err
 		}
-		fmt.Printf("Connected, Remote port: %d\n", info.LitenerPort)
-		fmt.Printf("           Remote address: %s\n", info.AddrPort.String())
+		fmt.Printf("Connected, Remote address: %s\n", client.AgentInfo.AddrPort.String())
+		if client.AgentInfo.Protocol == proto.ProtoUDP {
+			fmt.Printf("           Port: UDP %d\n", client.AgentInfo.UDPPort)
+		} else if client.AgentInfo.Protocol == proto.ProtoTCP {
+			fmt.Printf("           Port: TCP %d\n", client.AgentInfo.TCPPort)
+		} else if client.AgentInfo.Protocol == proto.ProtoBoth {
+			fmt.Printf("           Ports UDP %d and TCP %d\n", client.AgentInfo.UDPPort, client.AgentInfo.TCPPort)
+		}
+
 		localConnect := ctx.String("dial")
 		for {
-			var conn, dial net.Conn
-			select {
-			case conn = <-client.NewTCPClient:
+			client := <-client.NewClient
+			var dial net.Conn
+			if client.Client.Proto == proto.ProtoTCP {
 				if dial, err = net.Dial("tcp", localConnect); err != nil {
 					continue
 				}
-			case conn = <-client.NewUDPClient:
+			} else {
 				if dial, err = net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.MustParseAddrPort(localConnect))); err != nil {
 					continue
 				}
 			}
-			go io.Copy(conn, dial)
-			go io.Copy(dial, conn)
+			go io.Copy(client.Writer, dial)
+			go io.Copy(dial, client.Writer)
 		}
 	},
 }

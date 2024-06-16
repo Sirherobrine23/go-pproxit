@@ -117,7 +117,7 @@ func CreatePipe(LocalAddress, RemoteAddress net.Addr) (net.Conn, net.Conn) {
 	done2 := make(chan struct{})
 
 	p1 := &pipe{
-		localAddr: LocalAddress,
+		localAddr:  LocalAddress,
 		remoteAddr: RemoteAddress,
 
 		rdRx: cb1, rdTx: cn1,
@@ -127,7 +127,7 @@ func CreatePipe(LocalAddress, RemoteAddress net.Addr) (net.Conn, net.Conn) {
 		writeDeadline: makePipeDeadline(),
 	}
 	p2 := &pipe{
-		localAddr: LocalAddress,
+		localAddr:  LocalAddress,
 		remoteAddr: RemoteAddress,
 
 		rdRx: cb2, rdTx: cn2,

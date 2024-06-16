@@ -1,261 +1,179 @@
 package client
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/netip"
-	"reflect"
-	"time"
 
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/pipe"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
 
 var (
-	ErrAgentUnathorized error = errors.New("cannot auth agent and controller not accepted")
+	ErrCannotConnect error = errors.New("cannot connect to controller")
 )
 
+type NewClient struct {
+	Client proto.Client
+	Writer net.Conn
+}
+
 type Client struct {
-	ControlAddr    netip.AddrPort      // Controller address
-	Conn           net.Conn            // Agent controller connection
-	Token          proto.AgentAuth     // Agent Token
-	ResponseBuffer uint64              // Agent Reponse Buffer size, Initial size from proto.DataSize
-	RequestBuffer  uint64              // Controller send bytes, initial size from proto.DataSize
-	LastPong       *time.Time          // Last pong response
-	UDPClients     map[string]net.Conn // UDP Clients
-	TCPClients     map[string]net.Conn // TCP Clients
-	NewUDPClient   chan net.Conn       // Accepts new UDP Clients
-	NewTCPClient   chan net.Conn       // Accepts new TCP Clients
+	Token        [36]byte
+	RemoteAdress []netip.AddrPort
+	clientsTCP   map[string]net.Conn
+	clientsUDP   map[string]net.Conn
+	NewClient    chan NewClient
+
+	Conn      *net.UDPConn
+	AgentInfo *proto.AgentInfo
 }
 
-func NewClient(ControlAddr netip.AddrPort, Token [36]byte) Client {
-	return Client{
-		ControlAddr: ControlAddr,
-		Conn:        nil,
-		Token:       Token,
-
-		ResponseBuffer: proto.DataSize,
-		RequestBuffer:  proto.DataSize,
-
-		UDPClients:   make(map[string]net.Conn),
-		TCPClients:   make(map[string]net.Conn),
-		NewUDPClient: make(chan net.Conn),
-		NewTCPClient: make(chan net.Conn),
+func CreateClient(Addres []netip.AddrPort, Token [36]byte) (*Client, error) {
+	cli := &Client{
+		Token:        Token,
+		RemoteAdress: Addres,
+		clientsTCP:   make(map[string]net.Conn),
+		clientsUDP:   make(map[string]net.Conn),
+		NewClient:    make(chan NewClient),
 	}
+	if err := cli.Setup(); err != nil {
+		return cli, err
+	}
+	return cli, nil
 }
 
-// Close client.Conn and Clients
-func (client *Client) Close() error {
-	client.Conn.Close()
-	close(client.NewTCPClient)
-	close(client.NewUDPClient)
-	for addr, tunUDP := range client.UDPClients {
-		tunUDP.Close()
-		delete(client.UDPClients, addr)
-	}
-	for addr, tunTCP := range client.TCPClients {
-		tunTCP.Close()
-		delete(client.TCPClients, addr)
-	}
-	return nil
+func (client *Client) Send(req proto.Request) error {
+	return proto.WriteRequest(client.Conn, req)
 }
 
-func (client Client) Recive() (res *proto.Response, err error) {
-	recBuff := make([]byte, client.ResponseBuffer+proto.PacketSize)
-	var n int
-	if n, err = client.Conn.Read(recBuff); err != nil {
-		if opErr, isOp := err.(*net.OpError); isOp {
-			log.Println()
-			err = opErr.Err
-			if reflect.TypeOf(opErr.Err).String() == "poll.errNetClosing" {
-				return nil, io.EOF
-			}
+func (client *Client) Setup() error {
+	for _, addr := range client.RemoteAdress {
+		var err error
+		if client.Conn, err = net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(addr)); err != nil {
+			continue
 		}
-		return
 	}
-
-	res = new(proto.Response)
-	if err = res.Reader(bytes.NewBuffer(recBuff[:n])); err != nil {
-		return
+	if client.Conn == nil {
+		return ErrCannotConnect
 	}
-	d,_:=json.Marshal(res)
-	log.Println(string(d))
-	return
-}
-
-func (client Client) Send(req proto.Request) error {
-	buff, err := req.Wbytes()
-	if err != nil {
-		return err
-	} else if _, err = client.Conn.Write(buff); err != nil {
-		return err
-	}
-	return nil
-}
-
-// Send token to controller to connect to tunnel
-func (client *Client) auth() (info *proto.AgentInfo, err error) {
-	attemps := 0
-	var res *proto.Response
+	var auth = proto.AgentAuth(client.Token)
 	for {
-		if err = client.Send(proto.Request{AgentAuth: &client.Token}); err != nil {
-			client.Conn.Close()
-			return
-		} else if res, err = client.Recive(); err != nil {
-			client.Conn.Close()
-			return
-		}
-
-		if res.BadRequest || res.SendAuth {
-			// Wait seconds to resend token
-			<-time.After(time.Second * 3)
-			if attemps++; attemps >= 25 {
-				err = ErrAgentUnathorized // Cannot auth
-				return
-			}
-			continue // Reload auth
+		client.Send(proto.Request{AgentAuth: &auth})
+		res, err := proto.ReaderResponse(client.Conn)
+		if err != nil {
+			panic(err) // TODO: Require fix to agent shutdown graced
 		} else if res.Unauthorized {
-			// Close tunnel and break loop-de-loop 🦔
-			client.Conn.Close()
-			err = ErrAgentUnathorized
-			return
+			return ErrCannotConnect
+		} else if res.AgentInfo == nil {
+			continue
 		}
+		client.AgentInfo = res.AgentInfo
 		break
 	}
-	return res.AgentInfo, nil
+	go client.handlers()
+	return nil
 }
 
-// Dial to controller and auto accept new responses from controller
-func (client *Client) Dial() (info *proto.AgentInfo, err error) {
-	if client.Conn, err = net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(client.ControlAddr)); err != nil {
-		return
+type toWr struct {
+	Proto uint8
+	To    netip.AddrPort
+	tun   *Client
+}
+
+func (t toWr) Write(w []byte) (int, error) {
+	err := t.tun.Send(proto.Request{
+		DataTX: &proto.ClientData{
+			Client: proto.Client{
+				Client: t.To,
+				Proto:  t.Proto,
+			},
+			Size: uint64(len(w)),
+			Data: w[:],
+		},
+	})
+	if err == nil {
+		return len(w), nil
 	}
-	go client.backgroud()
-	return client.auth()
+	return 0, err
 }
 
-// Watcher response from controller
-func (client *Client) backgroud() (err error) {
-	go func(){
-		for {
-			var current = time.Now()
-			client.Send(proto.Request{Ping: &current})
-			<-time.After(time.Second * 5)
-		}
-	}()
+func (tun *Client) GetTargetWrite(Proto uint8, To netip.AddrPort) io.Writer {
+	return &toWr{Proto: Proto, To: To, tun: tun}
+}
+
+func (client *Client) handlers() {
 	for {
-		log.Println("waiting response from controller")
-		var res *proto.Response
-		if res, err = client.Recive(); err != nil {
-			log.Println(err.Error())
-			if err == io.EOF {
+		res, err := proto.ReaderResponse(client.Conn)
+		if err != nil {
+			panic(err) // TODO: Require fix to agent shutdown graced
+		} else if res.Unauthorized {
+			panic(fmt.Errorf("cannot recive requests")) // TODO: Require fix to agent shutdown graced
+		} else if res.SendAuth {
+			var auth = proto.AgentAuth(client.Token)
+			for {
+				client.Send(proto.Request{AgentAuth: &auth})
+				res, err := proto.ReaderResponse(client.Conn)
+				if err != nil {
+					panic(err) // TODO: Require fix to agent shutdown graced
+				} else if res.Unauthorized {
+					return
+				} else if res.AgentInfo == nil {
+					continue
+				}
+				client.AgentInfo = res.AgentInfo
 				break
 			}
-			continue
-		}
-
-		if res.ResizeBuffer != nil {
-			client.ResponseBuffer = *res.ResizeBuffer
-		} else if res.Pong != nil {
-			client.LastPong = res.Pong
-			continue // Wait to next response
-		} else if res.BadRequest {
-			continue
-		} else if res.Unauthorized {
-			return ErrAgentUnathorized
-		} else if res.SendAuth {
-			if _, err := client.auth(); err != nil {
-				return err
+		} else if cl := *res.CloseClient; res.CloseClient != nil {
+			if cl.Proto == proto.ProtoTCP {
+				if tun, ok := client.clientsTCP[cl.Client.String()]; ok {
+					tun.Close()
+				}
+			} else if cl.Proto == proto.ProtoUDP {
+				if tun, ok := client.clientsUDP[cl.Client.String()]; ok {
+					tun.Close()
+				}
 			}
-		} else if data := res.DataRX; data != nil {
-			if _, exist := client.TCPClients[data.Client.Client.String()]; !exist && data.Client.Proto == proto.ProtoTCP {
-				toAgent, toClient := pipe.CreatePipe(client.Conn.RemoteAddr(), net.TCPAddrFromAddrPort(data.Client.Client))
-				client.TCPClients[data.Client.Client.String()] = toClient
-				client.NewTCPClient <- toAgent // send to Accept
-				go func() {
-					for {
-						buff := make([]byte, client.RequestBuffer)
-						n, err := toClient.Read(buff)
-						if err != nil {
-							if err == io.EOF {
-								delete(client.TCPClients, data.Client.Client.String())
-								go client.Send(proto.Request{ClientClose: &data.Client})
-								go toClient.Close()
-								break
-							}
-							continue
-						} else {
-							if client.RequestBuffer-uint64(n) == 0 {
-								client.RequestBuffer += 500
-								var req proto.Request
-								req.ResizeBuffer = new(uint64)
-								*req.ResizeBuffer = client.RequestBuffer
-								client.Send(req)
-								<-time.After(time.Microsecond)
-							}
-							go client.Send(proto.Request{
-								DataTX: &proto.ClientData{
-									Client: data.Client,
-									Size:   uint64(n),
-									Data:   buff[:n],
-								},
-							})
-						}
+		} else if data := *res.DataRX; res.DataRX != nil {
+			if data.Client.Proto == proto.ProtoTCP {
+				if _, ok := client.clientsTCP[data.Client.Client.String()]; !ok {
+					toClient, toAgent := pipe.CreatePipe(net.TCPAddrFromAddrPort(data.Client.Client), net.TCPAddrFromAddrPort(data.Client.Client))
+					client.NewClient <- NewClient{
+						Client: data.Client,
+						Writer: toClient,
 					}
-				}()
-			} else if _, exist := client.UDPClients[data.Client.Client.String()]; !exist && data.Client.Proto == proto.ProtoUDP {
-				toAgent, toClient := pipe.CreatePipe(client.Conn.RemoteAddr(), net.UDPAddrFromAddrPort(data.Client.Client))
-				client.UDPClients[data.Client.Client.String()] = toClient
-				client.NewUDPClient <- toAgent // send to Accept
-				go func() {
-					for {
-						buff := make([]byte, client.RequestBuffer)
-						n, err := toClient.Read(buff)
-						if err != nil {
-							if err == io.EOF {
-								delete(client.UDPClients, data.Client.Client.String())
-								go client.Send(proto.Request{ClientClose: &data.Client})
-								go toClient.Close()
-								break
-							}
-							continue
-						} else {
-							if client.RequestBuffer-uint64(n) == 0 {
-								var req proto.Request
-								req.ResizeBuffer = new(uint64)
-								*req.ResizeBuffer = uint64(n)
-								go client.Send(req)
-							}
-							go client.Send(proto.Request{
-								DataTX: &proto.ClientData{
-									Client: data.Client,
-									Size:   uint64(n),
-									Data:   buff[:n],
-								},
-							})
-						}
+					client.clientsTCP[data.Client.Client.String()] = toAgent
+					go func() {
+						io.Copy(client.GetTargetWrite(proto.ProtoTCP, data.Client.Client), toAgent)
+						delete(client.clientsTCP, data.Client.Client.String())
+					}()
+				}
+			} else if data.Client.Proto == proto.ProtoUDP {
+				if _, ok := client.clientsUDP[data.Client.Client.String()]; !ok {
+					toClient, toAgent := pipe.CreatePipe(net.UDPAddrFromAddrPort(data.Client.Client), net.UDPAddrFromAddrPort(data.Client.Client))
+					client.NewClient <- NewClient{
+						Client: data.Client,
+						Writer: toClient,
 					}
-				}()
+					client.clientsUDP[data.Client.Client.String()] = toAgent
+					go func() {
+						io.Copy(client.GetTargetWrite(proto.ProtoUDP, data.Client.Client), toAgent)
+						delete(client.clientsUDP, data.Client.Client.String())
+					}()
+				}
 			}
 
-			if tcpConn, exist := client.TCPClients[data.Client.Client.String()]; exist && data.Client.Proto == proto.ProtoTCP {
-				go tcpConn.Write(data.Data)
-			} else if udpConn, exist := client.UDPClients[data.Client.Client.String()]; exist && data.Client.Proto == proto.ProtoUDP {
-				go udpConn.Write(data.Data)
-			}
-		} else if closeClient := res.CloseClient; closeClient != nil {
-			if tcpConn, exist := client.TCPClients[closeClient.Client.String()]; exist && closeClient.Proto == proto.ProtoTCP {
-				delete(client.TCPClients, closeClient.Client.String())
-				go tcpConn.Close()
-			} else if udpConn, exist := client.UDPClients[closeClient.Client.String()]; exist && closeClient.Proto == proto.ProtoUDP {
-				delete(client.UDPClients, closeClient.Client.String())
-				go udpConn.Close()
+			if data.Client.Proto == proto.ProtoTCP {
+				if tun, ok := client.clientsTCP[data.Client.Client.String()]; ok {
+					go tun.Write(data.Data)
+				}
+			} else if data.Client.Proto == proto.ProtoUDP {
+				if tun, ok := client.clientsUDP[data.Client.Client.String()]; ok {
+					go tun.Write(data.Data)
+				}
 			}
 		}
 	}
-	return nil
 }

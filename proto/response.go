@@ -21,15 +21,17 @@ const (
 )
 
 type AgentInfo struct {
-	Protocol    uint8          // Proto supported (proto.ProtoTCP, proto.ProtoUDP or proto.ProtoBoth)
-	LitenerPort uint16         // Controller port listened
-	AddrPort    netip.AddrPort // request address and port
+	Protocol         uint8          // Proto supported (proto.ProtoTCP, proto.ProtoUDP or proto.ProtoBoth)
+	UDPPort, TCPPort uint16         // Controller port listened
+	AddrPort         netip.AddrPort // request address and port
 }
 
 func (agent AgentInfo) Writer(w io.Writer) error {
 	if err := bigendian.WriteUint8(w, agent.Protocol); err != nil {
 		return err
-	} else if err := bigendian.WriteUint16(w, agent.LitenerPort); err != nil {
+	} else if err := bigendian.WriteUint16(w, agent.UDPPort); err != nil {
+		return err
+	} else if err := bigendian.WriteUint16(w, agent.TCPPort); err != nil {
 		return err
 	}
 	addr := agent.AddrPort.Addr()
@@ -54,7 +56,9 @@ func (agent AgentInfo) Writer(w io.Writer) error {
 func (agent *AgentInfo) Reader(r io.Reader) (err error) {
 	if agent.Protocol, err = bigendian.ReadUint8(r); err != nil {
 		return
-	} else if agent.LitenerPort, err = bigendian.ReadUint16(r); err != nil {
+	} else if agent.UDPPort, err = bigendian.ReadUint16(r); err != nil {
+		return
+	} else if agent.TCPPort, err = bigendian.ReadUint16(r); err != nil {
 		return
 	}
 	var addrFamily uint8
@@ -87,12 +91,26 @@ type Response struct {
 	BadRequest   bool // Controller accepted packet so cannot process Request
 	SendAuth     bool // Send Agent token
 
-	AgentInfo    *AgentInfo // Agent Info
-	Pong         *time.Time // ping response
-	ResizeBuffer *uint64    // Resize Agent response
+	AgentInfo *AgentInfo // Agent Info
+	Pong      *time.Time // ping response
 
 	CloseClient *Client     // Controller end client
 	DataRX      *ClientData // Controller recive data from client
+}
+
+func ReaderResponse(r io.Reader) (*Response, error) {
+	res := &Response{}
+	if err := res.Reader(r); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func WriteResponse(w io.Writer, res Response) error {
+	if err := res.Writer(w); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Get Bytes from Response
@@ -131,11 +149,6 @@ func (res Response) Writer(w io.Writer) error {
 			return err
 		}
 		return info.Writer(w)
-	} else if res.ResizeBuffer != nil {
-		if err := bigendian.WriteUint64(w, ResResize); err != nil {
-			return err
-		}
-		return bigendian.WriteUint64(w, *res.ResizeBuffer)
 	}
 	return ErrInvalidBody
 }
@@ -170,13 +183,6 @@ func (res *Response) Reader(r io.Reader) error {
 		}
 		res.Pong = new(time.Time)
 		*res.Pong = time.UnixMilli(unixMil)
-		return nil
-	} else if resID == ResResize {
-		var err error
-		res.ResizeBuffer = new(uint64)
-		if *res.ResizeBuffer, err = bigendian.ReadUint64(r); err != nil {
-			return err
-		}
 		return nil
 	}
 

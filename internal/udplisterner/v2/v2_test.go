@@ -3,18 +3,19 @@ package udplisterner
 import (
 	"bytes"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 )
 
 func TestListen(t *testing.T) {
 	addr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-	listen, err := Listen("udp", addr)
+	listen, err := Listener("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), 0)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer listen.Close() // end test
-	go func(){
+	go func() {
 		t.Logf("Waiting to accept client ...\n")
 		conn, err := listen.Accept()
 		if err != nil {
