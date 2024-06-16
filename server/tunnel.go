@@ -1,9 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
+	"log"
 	"net"
 	"net/netip"
+	"os"
 	"time"
 
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner/v2"
@@ -28,11 +31,17 @@ type Tunnel struct {
 	RootConn net.Conn   // Current client connection
 	TunInfo  TunnelInfo // Tunnel info
 
+	connTCP *net.TCPListener
+	connUDP net.Listener
+
 	UDPClients map[string]net.Conn // Current clients connected
 	TCPClients map[string]net.Conn // Current clients connected
 }
 
 func (tun *Tunnel) Close() error {
+	tun.connTCP.Close()
+	tun.connUDP.Close()
+
 	// Stop TCP Clients
 	for k := range tun.TCPClients {
 		tun.TCPClients[k].Close()
@@ -45,8 +54,8 @@ func (tun *Tunnel) Close() error {
 		delete(tun.UDPClients, k)
 	}
 
-	tun.RootConn.Close()                            // End root conenction
-	tun.TunInfo.Callbacks.AgentShutdown(time.Now()) // Register shutdown
+	go tun.RootConn.Close()                            // End root conenction
+	go tun.TunInfo.Callbacks.AgentShutdown(time.Now()) // Register shutdown
 	return nil
 }
 
@@ -84,6 +93,21 @@ func (tun *Tunnel) GetTargetWrite(Proto uint8, To netip.AddrPort) io.Writer {
 
 // Setup connections and maneger connections from agent
 func (tun *Tunnel) Setup() {
+	if proto.ProtoBoth == tun.TunInfo.Proto || proto.ProtoTCP == tun.TunInfo.Proto {
+		// Setup TCP Listerner
+		if err := tun.TCP(); err != nil {
+			tun.send(proto.Response{NotListened: true})
+			return
+		}
+	}
+	if proto.ProtoBoth == tun.TunInfo.Proto || proto.ProtoUDP == tun.TunInfo.Proto {
+		// Setup UDP Listerner
+		if err := tun.UDP(); err != nil {
+			tun.send(proto.Response{NotListened: true})
+			return
+		}
+	}
+
 	defer tun.Close()
 	tun.send(proto.Response{
 		AgentInfo: &proto.AgentInfo{
@@ -94,22 +118,21 @@ func (tun *Tunnel) Setup() {
 		},
 	})
 
-	if proto.ProtoBoth == tun.TunInfo.Proto || proto.ProtoTCP == tun.TunInfo.Proto {
-		go tun.TCP() // Setup TCP Listerner
-	}
-	if proto.ProtoBoth == tun.TunInfo.Proto || proto.ProtoUDP == tun.TunInfo.Proto {
-		go tun.UDP() // Setup UDP Listerner
-	}
-
 	for {
+		log.Printf("waiting request from %s", tun.RootConn.RemoteAddr().String())
 		req, err := proto.ReaderRequest(tun.RootConn)
 		if err != nil {
-			break
-		} else if ping := *req.Ping; req.Ping != nil {
+			return
+		}
+
+		d, _ := json.Marshal(req)
+		os.Stderr.Write(append(d, 0x000A))
+
+		if ping := req.Ping; req.Ping != nil {
 			var now = time.Now()
 			tun.send(proto.Response{Pong: &now})
-			go tun.TunInfo.Callbacks.AgentPing(ping, now) // backgroud process
-		} else if clClose := *req.ClientClose; req.ClientClose != nil {
+			go tun.TunInfo.Callbacks.AgentPing(*ping, now) // backgroud process
+		} else if clClose := req.ClientClose; req.ClientClose != nil {
 			if clClose.Proto == proto.ProtoTCP {
 				if cl, ok := tun.TCPClients[clClose.Client.String()]; ok {
 					cl.Close()
@@ -119,7 +142,7 @@ func (tun *Tunnel) Setup() {
 					cl.Close()
 				}
 			}
-		} else if data := *req.DataTX; req.DataTX != nil {
+		} else if data := req.DataTX; req.DataTX != nil {
 			go tun.TunInfo.Callbacks.RegisterTX(data.Client.Client, int(data.Size), data.Client.Proto)
 			if data.Client.Proto == proto.ProtoTCP {
 				if cl, ok := tun.TCPClients[data.Client.Client.String()]; ok {
@@ -135,47 +158,49 @@ func (tun *Tunnel) Setup() {
 }
 
 // Listen TCP
-func (tun *Tunnel) TCP() {
-	dial, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), tun.TunInfo.TCPPort)))
-	if err != nil {
-		tun.send(proto.Response{BadRequest: true}) // TODO: require new option to shutdown agent
-		tun.Close()                                // End process listen
-		return
+func (tun *Tunnel) TCP() (err error) {
+	if tun.connTCP, err = net.ListenTCP("tcp", net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), tun.TunInfo.TCPPort))); err != nil {
+		return err
 	}
-	for {
-		conn, err := dial.AcceptTCP()
-		if err != nil {
-			panic(err) // TODO: fix accepts in future
+	go func() {
+		for {
+			conn, err := tun.connTCP.AcceptTCP()
+			if err != nil {
+				// panic(err) // TODO: fix accepts in future
+				return
+			}
+			remote := netip.MustParseAddrPort(conn.RemoteAddr().String())
+			if tun.TunInfo.Callbacks.BlockedAddr(remote.Addr()) {
+				conn.Close() // Close connection
+				continue
+			}
+			tun.TCPClients[remote.String()] = conn
+			go io.Copy(tun.GetTargetWrite(proto.ProtoTCP, remote), conn)
 		}
-		remote := netip.MustParseAddrPort(conn.RemoteAddr().String())
-		if tun.TunInfo.Callbacks.BlockedAddr(remote.Addr()) {
-			conn.Close() // Close connection
-			continue
-		}
-		tun.TCPClients[remote.String()] = conn
-		go io.Copy(tun.GetTargetWrite(proto.ProtoTCP, remote), conn)
-	}
+	}()
+	return nil
 }
 
 // Listen UDP
-func (tun *Tunnel) UDP() {
-	dial, err := udplisterner.Listen("udp", netip.AddrPortFrom(netip.IPv4Unspecified(), tun.TunInfo.UDPPort))
-	if err != nil {
-		tun.send(proto.Response{BadRequest: true}) // TODO: require new option to shutdown agent
-		tun.Close()                                // End process listen
+func (tun *Tunnel) UDP() (err error) {
+	if tun.connUDP, err = udplisterner.Listen("udp", netip.AddrPortFrom(netip.IPv4Unspecified(), tun.TunInfo.UDPPort)); err != nil {
 		return
 	}
-	for {
-		conn, err := dial.Accept()
-		if err != nil {
-			panic(err) // TODO: fix accepts in future
+	go func() {
+		for {
+			conn, err := tun.connUDP.Accept()
+			if err != nil {
+				// panic(err) // TODO: fix accepts in future
+				return
+			}
+			remote := netip.MustParseAddrPort(conn.RemoteAddr().String())
+			if tun.TunInfo.Callbacks.BlockedAddr(remote.Addr()) {
+				conn.Close() // Close connection
+				continue
+			}
+			tun.UDPClients[remote.String()] = conn
+			go io.Copy(tun.GetTargetWrite(proto.ProtoUDP, remote), conn)
 		}
-		remote := netip.MustParseAddrPort(conn.RemoteAddr().String())
-		if tun.TunInfo.Callbacks.BlockedAddr(remote.Addr()) {
-			conn.Close() // Close connection
-			continue
-		}
-		tun.UDPClients[remote.String()] = conn
-		go io.Copy(tun.GetTargetWrite(proto.ProtoUDP, remote), conn)
-	}
+	}()
+	return
 }

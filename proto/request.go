@@ -53,7 +53,10 @@ func ReaderRequest(r io.Reader) (*Request, error) {
 }
 
 func WriteRequest(w io.Writer, res Request) error {
-	if err := res.Writer(w); err != nil {
+	buff, err := res.Wbytes()
+	if err != nil {
+		return err
+	} else if _, err := w.Write(buff); err != nil {
 		return err
 	}
 	return nil

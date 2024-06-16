@@ -71,7 +71,7 @@ var CmdClient = cli.Command{
 					continue
 				}
 			} else {
-				if dial, err = net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.MustParseAddrPort(localConnect))); err != nil {
+				if dial, err = net.Dial("udp", localConnect); err != nil {
 					continue
 				}
 			}

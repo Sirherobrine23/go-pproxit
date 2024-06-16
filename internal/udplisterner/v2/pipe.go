@@ -1,8 +1,9 @@
 package udplisterner
 
 import (
-	"bufio"
+	"bytes"
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"time"
@@ -11,12 +12,12 @@ import (
 type PipeConn struct {
 	root          *net.UDPConn
 	to, localAddr netip.AddrPort
-	buff          *bufio.ReadWriter
+	buff          *bytes.Buffer
 	closed        bool
 	closedChan    chan struct{}
 }
 
-func NewConn(root *net.UDPConn, LocalAddr, to netip.AddrPort, buff *bufio.ReadWriter) net.Conn {
+func NewConn(root *net.UDPConn, LocalAddr, to netip.AddrPort, buff *bytes.Buffer) *PipeConn {
 	return &PipeConn{
 		root:       root,
 		to:         to,
@@ -31,8 +32,6 @@ func NewConn(root *net.UDPConn, LocalAddr, to netip.AddrPort, buff *bufio.ReadWr
 func (conn *PipeConn) Close() error {
 	conn.closedChan <- struct{}{}
 	conn.closed = true // end channel
-	conn.buff.Discard(conn.buff.Available())
-	conn.buff.Flush()
 	return nil
 }
 
@@ -53,12 +52,25 @@ func (PipeConn) SetWriteDeadline(time.Time) error { return nil }
 func (PipeConn) SetReadDeadline(time.Time) error  { return nil }
 
 func (conn PipeConn) Read(r []byte) (int, error) {
-	for {
-		if conn.closed {
-			return 0, io.EOF
-		} else if conn.buff.Available() >= len(r) {
-			return conn.buff.Read(r)
-		}
-		<-time.After(time.Millisecond) // wait 1ms
+	if conn.closed {
+		return 0, io.EOF
 	}
+
+	doned := false
+	defer func(){
+		doned = true
+	}()
+	time.AfterFunc(time.Second*15, func() {
+		if doned {
+			return
+		}
+		doned = true
+		conn.Close()
+	})
+	for conn.buff.Len() < len(r) && !conn.closed {
+		log.Println("waiting")
+		<-time.After(time.Second)
+	}
+
+	return conn.buff.Read(r)
 }

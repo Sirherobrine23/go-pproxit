@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"time"
 
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/pipe"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
@@ -55,26 +56,26 @@ func (client *Client) Setup() error {
 		if client.Conn, err = net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(addr)); err != nil {
 			continue
 		}
-	}
-	if client.Conn == nil {
-		return ErrCannotConnect
-	}
-	var auth = proto.AgentAuth(client.Token)
-	for {
-		client.Send(proto.Request{AgentAuth: &auth})
-		res, err := proto.ReaderResponse(client.Conn)
-		if err != nil {
-			panic(err) // TODO: Require fix to agent shutdown graced
-		} else if res.Unauthorized {
-			return ErrCannotConnect
-		} else if res.AgentInfo == nil {
-			continue
+		client.Conn.SetReadDeadline(time.Now().Add(time.Second * 5))
+		var auth = proto.AgentAuth(client.Token)
+		for {
+			client.Send(proto.Request{AgentAuth: &auth})
+			res, err := proto.ReaderResponse(client.Conn)
+			if err != nil {
+				// return err
+				break
+			} else if res.Unauthorized {
+				return ErrCannotConnect
+			} else if res.AgentInfo == nil {
+				continue
+			}
+			client.AgentInfo = res.AgentInfo
+			client.Conn.SetReadDeadline(*new(time.Time)) // clear timeout
+			go client.handlers()
+			return nil
 		}
-		client.AgentInfo = res.AgentInfo
-		break
 	}
-	go client.handlers()
-	return nil
+	return ErrCannotConnect
 }
 
 type toWr struct {
@@ -108,8 +109,12 @@ func (client *Client) handlers() {
 	for {
 		res, err := proto.ReaderResponse(client.Conn)
 		if err != nil {
+			if err == proto.ErrInvalidBody {
+				continue
+			}
+			fmt.Println(err)
 			panic(err) // TODO: Require fix to agent shutdown graced
-		} else if res.Unauthorized {
+		} else if res.Unauthorized || res.NotListened {
 			panic(fmt.Errorf("cannot recive requests")) // TODO: Require fix to agent shutdown graced
 		} else if res.SendAuth {
 			var auth = proto.AgentAuth(client.Token)
@@ -126,7 +131,7 @@ func (client *Client) handlers() {
 				client.AgentInfo = res.AgentInfo
 				break
 			}
-		} else if cl := *res.CloseClient; res.CloseClient != nil {
+		} else if cl := res.CloseClient; res.CloseClient != nil {
 			if cl.Proto == proto.ProtoTCP {
 				if tun, ok := client.clientsTCP[cl.Client.String()]; ok {
 					tun.Close()
@@ -136,7 +141,7 @@ func (client *Client) handlers() {
 					tun.Close()
 				}
 			}
-		} else if data := *res.DataRX; res.DataRX != nil {
+		} else if data := res.DataRX; res.DataRX != nil {
 			if data.Client.Proto == proto.ProtoTCP {
 				if _, ok := client.clientsTCP[data.Client.Client.String()]; !ok {
 					toClient, toAgent := pipe.CreatePipe(net.TCPAddrFromAddrPort(data.Client.Client), net.TCPAddrFromAddrPort(data.Client.Client))
@@ -161,6 +166,7 @@ func (client *Client) handlers() {
 					go func() {
 						io.Copy(client.GetTargetWrite(proto.ProtoUDP, data.Client.Client), toAgent)
 						delete(client.clientsUDP, data.Client.Client.String())
+						toAgent.Close()
 					}()
 				}
 			}

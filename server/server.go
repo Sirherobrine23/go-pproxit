@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 
@@ -40,44 +41,6 @@ func NewController(calls ServerCall, local netip.AddrPort) (*Server, error) {
 	return tuns, nil
 }
 
-func (controller *Server) handlerConn(conn net.Conn) {
-	defer conn.Close() // End agent accepts
-	var req *proto.Request
-	var tunnelInfo TunnelInfo
-	var err error
-	for {
-		if req, err = proto.ReaderRequest(conn); err != nil {
-			break
-		} else if req.AgentAuth == nil {
-			proto.WriteResponse(conn, proto.Response{SendAuth: true})
-			continue
-		}
-		if tunnelInfo, err = controller.ControlCalls.AgentAuthentication([36]byte(req.AgentAuth[:])); err != nil {
-			if err == ErrAuthAgentFail {
-				proto.WriteResponse(conn, proto.Response{Unauthorized: true})
-				return
-			}
-			proto.WriteResponse(conn, proto.Response{BadRequest: true})
-			continue
-		}
-		break
-	}
-	// Close current tunnel
-	if tun, ok := controller.Agents[string(req.AgentAuth[:])]; ok {
-		tun.Close() // Close connection
-	}
-
-	var tun = &Tunnel{
-		RootConn: conn,
-		TunInfo:  tunnelInfo,
-
-		UDPClients: make(map[string]net.Conn),
-		TCPClients: make(map[string]net.Conn),
-	}
-	controller.Agents[string(req.AgentAuth[:])] = tun
-	go tun.Setup()
-}
-
 func (controller *Server) handler() {
 	defer controller.ControllConn.Close()
 	for {
@@ -87,4 +50,43 @@ func (controller *Server) handler() {
 		}
 		go controller.handlerConn(conn)
 	}
+}
+
+func (controller *Server) handlerConn(conn net.Conn) {
+	defer conn.Close() // End agent accepted
+	fmt.Printf("Parsing connection from %s\n", conn.RemoteAddr().String())
+
+	var req *proto.Request
+	var tunnelInfo TunnelInfo
+	var err error
+	for {
+		if req, err = proto.ReaderRequest(conn); err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		if req.AgentAuth == nil {
+			proto.WriteResponse(conn, proto.Response{SendAuth: true})
+			continue
+		} else if tunnelInfo, err = controller.ControlCalls.AgentAuthentication([36]byte(req.AgentAuth[:])); err != nil {
+			if err == ErrAuthAgentFail {
+				proto.WriteResponse(conn, proto.Response{Unauthorized: true})
+				return
+			}
+			proto.WriteResponse(conn, proto.Response{BadRequest: true})
+			continue
+		}
+		break
+	}
+
+	// Close current tunnel
+	if tun, ok := controller.Agents[string(req.AgentAuth[:])]; ok {
+		fmt.Println("closing old tunnel")
+		tun.Close() // Close connection
+	}
+
+	var tun = &Tunnel{RootConn: conn, TunInfo: tunnelInfo, UDPClients: make(map[string]net.Conn), TCPClients: make(map[string]net.Conn)}
+	controller.Agents[string(req.AgentAuth[:])] = tun
+	tun.Setup()
+	delete(controller.Agents, string(req.AgentAuth[:]))
 }

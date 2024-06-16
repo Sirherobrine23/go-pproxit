@@ -3,6 +3,7 @@ package proto
 import (
 	"bytes"
 	"io"
+	"log"
 	"net/netip"
 	"time"
 
@@ -17,7 +18,7 @@ const (
 	ResSendAuth     uint64 = 5 // Send token to controller
 	ResAgentInfo    uint64 = 6 // Agent info
 	ResPong         uint64 = 7 // Ping response
-	ResResize       uint64 = 8 // Resize buffer size
+	ResNotListening uint64 = 8 // Resize buffer size
 )
 
 type AgentInfo struct {
@@ -90,6 +91,7 @@ type Response struct {
 	Unauthorized bool // Controller reject connection
 	BadRequest   bool // Controller accepted packet so cannot process Request
 	SendAuth     bool // Send Agent token
+	NotListened  bool // Controller cannot Listen port
 
 	AgentInfo *AgentInfo // Agent Info
 	Pong      *time.Time // ping response
@@ -107,7 +109,11 @@ func ReaderResponse(r io.Reader) (*Response, error) {
 }
 
 func WriteResponse(w io.Writer, res Response) error {
-	if err := res.Writer(w); err != nil {
+	buff, err := res.Wbytes()
+	defer log.Println(buff)
+	if err != nil {
+		return err
+	} else if _, err := w.Write(buff); err != nil {
 		return err
 	}
 	return nil
@@ -129,6 +135,8 @@ func (res Response) Writer(w io.Writer) error {
 		return bigendian.WriteUint64(w, ResBadRequest)
 	} else if res.SendAuth {
 		return bigendian.WriteUint64(w, ResSendAuth)
+	} else if res.NotListened {
+		return bigendian.WriteUint64(w, ResNotListening)
 	} else if pong := res.Pong; pong != nil {
 		if err := bigendian.WriteUint64(w, ResPong); err != nil {
 			return err
@@ -164,6 +172,9 @@ func (res *Response) Reader(r io.Reader) error {
 	} else if resID == ResUnauthorized {
 		res.Unauthorized = true
 		return nil
+	} else if resID == ResNotListening {
+		res.NotListened = true
+		return nil
 	} else if resID == ResSendAuth {
 		res.SendAuth = true
 		return nil
@@ -185,6 +196,5 @@ func (res *Response) Reader(r io.Reader) error {
 		*res.Pong = time.UnixMilli(unixMil)
 		return nil
 	}
-
 	return ErrInvalidBody
 }
