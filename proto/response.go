@@ -88,16 +88,16 @@ func (agent *AgentInfo) Reader(r io.Reader) (err error) {
 
 // Reader data from Controller and process in agent
 type Response struct {
-	Unauthorized bool // Controller reject connection
-	BadRequest   bool // Controller accepted packet so cannot process Request
-	SendAuth     bool // Send Agent token
-	NotListened  bool // Controller cannot Listen port
+	Unauthorized bool `json:",omitempty"` // Controller reject connection
+	BadRequest   bool `json:",omitempty"` // Controller accepted packet so cannot process Request
+	SendAuth     bool `json:",omitempty"` // Send Agent token
+	NotListened  bool `json:",omitempty"` // Controller cannot Listen port
 
-	AgentInfo *AgentInfo // Agent Info
-	Pong      *time.Time // ping response
+	AgentInfo *AgentInfo `json:",omitempty"` // Agent Info
+	Pong      *time.Time `json:",omitempty"` // ping response
 
-	CloseClient *Client     // Controller end client
-	DataRX      *ClientData // Controller recive data from client
+	CloseClient *Client     `json:",omitempty"` // Controller end client
+	DataRX      *ClientData `json:",omitempty"` // Controller recive data from client
 }
 
 func ReaderResponse(r io.Reader) (*Response, error) {

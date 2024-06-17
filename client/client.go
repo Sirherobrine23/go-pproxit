@@ -1,6 +1,8 @@
 package client
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -60,8 +62,22 @@ func (client *Client) Setup() error {
 		var auth = proto.AgentAuth(client.Token)
 		for {
 			client.Send(proto.Request{AgentAuth: &auth})
-			res, err := proto.ReaderResponse(client.Conn)
+
+			buff := make([]byte, 1024)
+			n, err := client.Conn.Read(buff)
 			if err != nil {
+				return err
+			}
+
+			res, err := proto.ReaderResponse(bytes.NewBuffer(buff[:n]))
+			if err != nil {
+				if opt, isOpt := err.(*net.OpError); isOpt {
+					if opt.Timeout() {
+						<-time.After(time.Second * 3)
+						client.Send(proto.Request{AgentAuth: &auth})
+						continue
+					}
+				}
 				// return err
 				break
 			} else if res.Unauthorized {
@@ -106,8 +122,17 @@ func (tun *Client) GetTargetWrite(Proto uint8, To netip.AddrPort) io.Writer {
 }
 
 func (client *Client) handlers() {
+	var lastPing int64 = 0
 	for {
+		if time.Now().UnixMilli() - lastPing > 3_000 {
+			var now = time.Now()
+			go client.Send(proto.Request{Ping: &now})
+		}
+
 		res, err := proto.ReaderResponse(client.Conn)
+		d, _ := json.Marshal(res)
+		fmt.Println(string(d))
+		
 		if err != nil {
 			if err == proto.ErrInvalidBody {
 				continue
@@ -179,6 +204,8 @@ func (client *Client) handlers() {
 				if tun, ok := client.clientsUDP[data.Client.Client.String()]; ok {
 					go tun.Write(data.Data)
 				}
+			} else if res.Pong != nil {
+				fmt.Println(res.Pong.String())
 			}
 		}
 	}

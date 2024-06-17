@@ -2,11 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/netip"
-	"os"
 	"time"
 
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner/v2"
@@ -14,7 +14,7 @@ import (
 )
 
 type TunnelCall interface {
-	BlockedAddr(AddrPort netip.Addr) bool                    // Ignore request from this address
+	BlockedAddr(AddrPort string) bool                    // Ignore request from this address
 	AgentPing(agent, server time.Time)                       // Register ping to Agent
 	AgentShutdown(onTime time.Time)                          // Agend end connection
 	RegisterRX(client netip.AddrPort, Size int, Proto uint8) // Register Recived data from client
@@ -60,6 +60,8 @@ func (tun *Tunnel) Close() error {
 }
 
 func (tun *Tunnel) send(res proto.Response) error {
+	d, _ := json.Marshal(res)
+	fmt.Printf("\nSending: %s\n", string(d))
 	return proto.WriteResponse(tun.RootConn, res)
 }
 
@@ -126,9 +128,19 @@ func (tun *Tunnel) Setup() {
 		}
 
 		d, _ := json.Marshal(req)
-		os.Stderr.Write(append(d, 0x000A))
+		fmt.Printf("\nRequest: %s\n", string(d))
 
-		if ping := req.Ping; req.Ping != nil {
+		if req.AgentAuth != nil {
+			go tun.send(proto.Response{
+				AgentInfo: &proto.AgentInfo{
+					Protocol: tun.TunInfo.Proto,
+					AddrPort: netip.MustParseAddrPort(tun.RootConn.RemoteAddr().String()),
+					UDPPort:  tun.TunInfo.UDPPort,
+					TCPPort:  tun.TunInfo.TCPPort,
+				},
+			})
+			continue
+		} else if ping := req.Ping; req.Ping != nil {
 			var now = time.Now()
 			tun.send(proto.Response{Pong: &now})
 			go tun.TunInfo.Callbacks.AgentPing(*ping, now) // backgroud process
@@ -170,7 +182,7 @@ func (tun *Tunnel) TCP() (err error) {
 				return
 			}
 			remote := netip.MustParseAddrPort(conn.RemoteAddr().String())
-			if tun.TunInfo.Callbacks.BlockedAddr(remote.Addr()) {
+			if tun.TunInfo.Callbacks.BlockedAddr(remote.Addr().String()) {
 				conn.Close() // Close connection
 				continue
 			}
@@ -194,7 +206,7 @@ func (tun *Tunnel) UDP() (err error) {
 				return
 			}
 			remote := netip.MustParseAddrPort(conn.RemoteAddr().String())
-			if tun.TunInfo.Callbacks.BlockedAddr(remote.Addr()) {
+			if tun.TunInfo.Callbacks.BlockedAddr(remote.Addr().String()) {
 				conn.Close() // Close connection
 				continue
 			}

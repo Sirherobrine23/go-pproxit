@@ -4,7 +4,6 @@ Lidar com pacotes de varios tamanhos
 package udplisterner
 
 import (
-	"bytes"
 	"log"
 	"net"
 	"net/netip"
@@ -73,14 +72,7 @@ func (list *Udplisterner) handle() {
 			list.locker.Lock() // Locker map
 			list.loger.Printf("locked")
 
-			list.currentClients[from.String()] = &PipeConn{
-				root:       list.conn,
-				to:         from,
-				localAddr:  from,
-				closedChan: make(chan struct{}),
-				closed:     false,
-				buff:       bytes.NewBuffer(make([]byte, 0)),
-			}
+			list.currentClients[from.String()] = NewConn(list.conn, from, from)
 			client = list.currentClients[from.String()]
 
 			list.locker.Unlock() // Unlocker map

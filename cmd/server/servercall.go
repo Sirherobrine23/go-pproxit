@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -39,6 +40,22 @@ type Ping struct {
 	AgentTime  time.Time `json:"agent" xorm:"datetime notnull"`
 }
 
+type AddrBlocked struct {
+	ID      int64 `json:"-" xorm:"pk"` // Tunnel ID
+	TunID   int64 `json:"-"`
+	Enabled bool
+	Address string
+}
+
+type RTX struct {
+	ID     int64 `json:"-" xorm:"pk"` // Tunnel ID
+	TunID  int64 `json:"-"`
+	Client netip.AddrPort
+	TXSize int
+	RXSize int
+	Proto  uint8
+}
+
 func NewCall(DBConn string) (call *serverCalls, err error) {
 	call = new(serverCalls)
 	if call.XormEngine, err = xorm.NewEngine("sqlite", DBConn); err != nil {
@@ -49,7 +66,9 @@ func NewCall(DBConn string) (call *serverCalls, err error) {
 	defer session.Close()
 	session.CreateTable(User{})
 	session.CreateTable(Tun{})
+	session.CreateTable(AddrBlocked{})
 	session.CreateTable(Ping{})
+	session.CreateTable(RTX{})
 	return
 }
 
@@ -58,11 +77,58 @@ type TunCallbcks struct {
 	XormEngine *xorm.Engine
 }
 
-func (tun *TunCallbcks) BlockedAddr(AddrPort netip.Addr) bool                    { return false }
-func (tun *TunCallbcks) AgentPing(agent, server time.Time)                       {}
-func (tun *TunCallbcks) AgentShutdown(onTime time.Time)                          {}
-func (tun *TunCallbcks) RegisterRX(client netip.AddrPort, Size int, Proto uint8) {}
-func (tun *TunCallbcks) RegisterTX(client netip.AddrPort, Size int, Proto uint8) {}
+func (tun *TunCallbcks) AgentShutdown(onTime time.Time) {}
+
+func (tun *TunCallbcks) BlockedAddr(AddrPort string) bool {
+	var addr = AddrBlocked{Address: AddrPort, TunID: tun.tunID}
+	ok, err := tun.XormEngine.Get(&addr)
+	if err != nil {
+		fmt.Println(err)
+		return true
+	} else if ok {
+		return addr.Enabled
+	}
+	var addrs []AddrBlocked
+	if err := tun.XormEngine.Find(&addrs); err != nil {
+		fmt.Println(err)
+		return true
+	}
+	for ind := range addrs {
+		if addrs[ind].Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+func (tun *TunCallbcks) AgentPing(agent, server time.Time) {
+	c, _ := tun.XormEngine.Count(Ping{})
+	tun.XormEngine.InsertOne(&Ping{
+		ID: c,
+		TunID:      tun.tunID,
+		ServerTime: server,
+		AgentTime:  agent,
+	})
+}
+
+func (tun *TunCallbcks) RegisterRX(client netip.AddrPort, Size int, Proto uint8) {
+	tun.XormEngine.InsertOne(&RTX{
+		TunID:  tun.tunID,
+		Client: client,
+		Proto:  Proto,
+		RXSize: Size,
+		TXSize: 0,
+	})
+}
+func (tun *TunCallbcks) RegisterTX(client netip.AddrPort, Size int, Proto uint8) {
+	tun.XormEngine.InsertOne(&RTX{
+		TunID:  tun.tunID,
+		Client: client,
+		Proto:  Proto,
+		TXSize: Size,
+		RXSize: 0,
+	})
+}
 
 func (caller *serverCalls) AgentAuthentication(Token [36]byte) (server.TunnelInfo, error) {
 	var tun = Tun{Token: Token}

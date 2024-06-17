@@ -3,7 +3,6 @@ package udplisterner
 import (
 	"bytes"
 	"io"
-	"log"
 	"net"
 	"net/netip"
 	"time"
@@ -12,19 +11,19 @@ import (
 type PipeConn struct {
 	root          *net.UDPConn
 	to, localAddr netip.AddrPort
-	buff          *bytes.Buffer
 	closed        bool
 	closedChan    chan struct{}
+	buff          *bytes.Buffer
 }
 
-func NewConn(root *net.UDPConn, LocalAddr, to netip.AddrPort, buff *bytes.Buffer) *PipeConn {
+func NewConn(root *net.UDPConn, LocalAddr, to netip.AddrPort) *PipeConn {
 	return &PipeConn{
 		root:       root,
 		to:         to,
 		localAddr:  LocalAddr,
 		closedChan: make(chan struct{}),
 		closed:     false,
-		buff:       buff,
+		buff:       bytes.NewBuffer(make([]byte, 0)),
 	}
 }
 
@@ -55,22 +54,12 @@ func (conn PipeConn) Read(r []byte) (int, error) {
 	if conn.closed {
 		return 0, io.EOF
 	}
-
-	doned := false
-	defer func(){
-		doned = true
-	}()
-	time.AfterFunc(time.Second*15, func() {
-		if doned {
-			return
+	count := 50
+	for !conn.closed && conn.buff.Len() < len(r) {
+		if count--; count == 0 {
+			return 0, io.EOF
 		}
-		doned = true
-		conn.Close()
-	})
-	for conn.buff.Len() < len(r) && !conn.closed {
-		log.Println("waiting")
-		<-time.After(time.Second)
+		<-time.After(time.Second * 5)
 	}
-
 	return conn.buff.Read(r)
 }

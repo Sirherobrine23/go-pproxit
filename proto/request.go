@@ -37,11 +37,10 @@ func (agent *AgentAuth) Reader(r io.Reader) error {
 
 // Send request to agent and wait response
 type Request struct {
-	AgentAuth    *AgentAuth  // Send agent authentication to controller
-	Ping         *time.Time  // Send ping time to controller in unix milliseconds
-	ClientClose  *Client     // Close client in controller
-	DataTX       *ClientData // Recive data from agent
-	ResizeBuffer *uint64     // Resize request buffer
+	AgentAuth   *AgentAuth  `json:",omitempty"` // Send agent authentication to controller
+	Ping        *time.Time  `json:",omitempty"` // Send ping time to controller in unix milliseconds
+	ClientClose *Client     `json:",omitempty"` // Close client in controller
+	DataTX      *ClientData `json:",omitempty"` // Recive data from agent
 }
 
 func ReaderRequest(r io.Reader) (*Request, error) {
