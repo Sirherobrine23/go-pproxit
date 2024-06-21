@@ -1,20 +1,18 @@
 package server
 
 import (
-	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/netip"
 	"time"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner/v2"
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
 
 type TunnelCall interface {
-	BlockedAddr(AddrPort string) bool                    // Ignore request from this address
+	BlockedAddr(AddrPort string) bool                        // Ignore request from this address
 	AgentPing(agent, server time.Time)                       // Register ping to Agent
 	AgentShutdown(onTime time.Time)                          // Agend end connection
 	RegisterRX(client netip.AddrPort, Size int, Proto uint8) // Register Recived data from client
@@ -60,8 +58,6 @@ func (tun *Tunnel) Close() error {
 }
 
 func (tun *Tunnel) send(res proto.Response) error {
-	d, _ := json.Marshal(res)
-	fmt.Printf("\nSending: %s\n", string(d))
 	return proto.WriteResponse(tun.RootConn, res)
 }
 
@@ -126,9 +122,6 @@ func (tun *Tunnel) Setup() {
 		if err != nil {
 			return
 		}
-
-		d, _ := json.Marshal(req)
-		fmt.Printf("\nRequest: %s\n", string(d))
 
 		if req.AgentAuth != nil {
 			go tun.send(proto.Response{
@@ -195,7 +188,7 @@ func (tun *Tunnel) TCP() (err error) {
 
 // Listen UDP
 func (tun *Tunnel) UDP() (err error) {
-	if tun.connUDP, err = udplisterner.Listen("udp", netip.AddrPortFrom(netip.IPv4Unspecified(), tun.TunInfo.UDPPort)); err != nil {
+	if tun.connUDP, err = udplisterner.ListenAddrPort("udp", netip.AddrPortFrom(netip.IPv4Unspecified(), tun.TunInfo.UDPPort)); err != nil {
 		return
 	}
 	go func() {

@@ -6,7 +6,7 @@ import (
 	"net"
 	"net/netip"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner/v2"
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
 
@@ -27,7 +27,7 @@ type Server struct {
 }
 
 func NewController(calls ServerCall, local netip.AddrPort) (*Server, error) {
-	conn, err := udplisterner.Listen("udp", local)
+	conn, err := udplisterner.ListenAddrPort("udp", local)
 	if err != nil {
 		return nil, err
 	}
@@ -54,14 +54,12 @@ func (controller *Server) handler() {
 
 func (controller *Server) handlerConn(conn net.Conn) {
 	defer conn.Close() // End agent accepted
-	fmt.Printf("Parsing connection from %s\n", conn.RemoteAddr().String())
-
 	var req *proto.Request
 	var tunnelInfo TunnelInfo
 	var err error
 	for {
 		if req, err = proto.ReaderRequest(conn); err != nil {
-			fmt.Println(err)
+			panic(err)
 			return
 		}
 

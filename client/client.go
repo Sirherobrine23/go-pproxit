@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -122,24 +123,32 @@ func (tun *Client) GetTargetWrite(Proto uint8, To netip.AddrPort) io.Writer {
 }
 
 func (client *Client) handlers() {
+	bufioBuff := bufio.NewReader(client.Conn)
 	var lastPing int64 = 0
 	for {
-		if time.Now().UnixMilli() - lastPing > 3_000 {
+		if time.Now().UnixMilli()-lastPing > 3_000 {
 			var now = time.Now()
 			go client.Send(proto.Request{Ping: &now})
 		}
 
-		res, err := proto.ReaderResponse(client.Conn)
-		d, _ := json.Marshal(res)
-		fmt.Println(string(d))
-		
+		res, err := proto.ReaderResponse(bufioBuff)
+
 		if err != nil {
+			fmt.Println(err)
 			if err == proto.ErrInvalidBody {
 				continue
 			}
-			fmt.Println(err)
 			panic(err) // TODO: Require fix to agent shutdown graced
-		} else if res.Unauthorized || res.NotListened {
+		}
+
+		d, _ := json.Marshal(res)
+		fmt.Println(string(d))
+
+		if res.Pong != nil {
+			lastPing = res.Pong.UnixMilli()
+			continue
+		}
+		if res.Unauthorized || res.NotListened {
 			panic(fmt.Errorf("cannot recive requests")) // TODO: Require fix to agent shutdown graced
 		} else if res.SendAuth {
 			var auth = proto.AgentAuth(client.Token)

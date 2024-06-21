@@ -3,7 +3,6 @@ package proto
 import (
 	"bytes"
 	"io"
-	"log"
 	"net/netip"
 	"time"
 
@@ -110,7 +109,6 @@ func ReaderResponse(r io.Reader) (*Response, error) {
 
 func WriteResponse(w io.Writer, res Response) error {
 	buff, err := res.Wbytes()
-	defer log.Println(buff)
 	if err != nil {
 		return err
 	} else if _, err := w.Write(buff); err != nil {
