@@ -11,6 +11,8 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/sandertv/go-raknet"
+
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/pipe"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
@@ -31,7 +33,7 @@ type Client struct {
 	clientsUDP   map[string]net.Conn
 	NewClient    chan NewClient
 
-	Conn      *net.UDPConn
+	Conn      *raknet.Conn
 	AgentInfo *proto.AgentInfo
 }
 
@@ -56,7 +58,7 @@ func (client *Client) Send(req proto.Request) error {
 func (client *Client) Setup() error {
 	for _, addr := range client.RemoteAdress {
 		var err error
-		if client.Conn, err = net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(addr)); err != nil {
+		if client.Conn, err = raknet.Dial(addr.String()); err != nil {
 			continue
 		}
 		client.Conn.SetReadDeadline(time.Now().Add(time.Second * 5))

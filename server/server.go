@@ -6,7 +6,8 @@ import (
 	"net"
 	"net/netip"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner"
+	"github.com/sandertv/go-raknet"
+
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
 
@@ -20,14 +21,14 @@ type ServerCall interface {
 }
 
 type Server struct {
-	ControllConn net.Listener
+	ControllConn *raknet.Listener
 	ProcessError chan error
 	ControlCalls ServerCall
 	Agents       map[string]*Tunnel
 }
 
 func NewController(calls ServerCall, local netip.AddrPort) (*Server, error) {
-	conn, err := udplisterner.ListenAddrPort("udp", local)
+	conn, err := raknet.Listen(local.String())
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +60,6 @@ func (controller *Server) handlerConn(conn net.Conn) {
 	var err error
 	for {
 		if req, err = proto.ReaderRequest(conn); err != nil {
-			panic(err)
 			return
 		}
 
