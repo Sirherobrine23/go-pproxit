@@ -1,177 +1,242 @@
 package structcode
 
 import (
-	"bytes"
+	"encoding"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"reflect"
-	"strings"
-	"time"
 )
 
 /*
 Este bloco de codigo server apenas para facilitar minha vida no mundo do go
 Definindo a estrutura de seguinte maneira, os dados estão fortemente ligado as structs go então qualquer merda aqui pode ferra com qualquer versão anterior, então isso não será recomendado para algumas coisa
 Os dados serão escritos em BigEndian, então tenha cuidado com os dados inseridos casos sejam inportantes
+Os pointers serão verificados se são nil's para idicar para a sereliazação e desereliazação
 
-time.Time              -> time.Time.UnixMilli()
-[]bytes								 =  Int (Size) + []bytes
-String								 -> Int (Size) + []bytes
-bool									 -> 0/1
-int, uint, int8, uint8 =  int
-int32, uint32          =  int32
-int64, uint64          =  int64
+*any               -> int8(0|1) + data...
+[]any              -> int64 (Size) + data...
+map[any]any        -> int64 (Size) + (key + data)...
+[]bytes	Or String  -> Int64 (Size) + []bytes
+int64, uint64      -> int64
+int32, uint32      -> int32
+int16, uint16      -> int16
+int8, uint8        -> int8
+bool					     -> int8(0|1)
 */
 
-var (
-	typeofByte = reflect.TypeOf(([]byte{0})[0])
-)
+const selectorTagName = "ser"
 
-func NewEncode(w io.Writer, body any) error {
-	if body == nil {
-		return nil
+var typeofBytes = reflect.TypeOf([]byte{})
+
+func NewEncode(w io.Writer, target any) error {
+	if target == nil {
+		return binary.Write(w, binary.BigEndian, int8(0))
 	}
+	targetReflect := reflect.ValueOf(target)
+	switch targetReflect.Type().Kind() {
+	case reflect.Array, reflect.Slice:
+		if err := binary.Write(w, binary.BigEndian, int64(targetReflect.Len())); err != nil {
+			return err
+		}
 
-	elem := reflect.TypeOf(body).Elem()
-	valuePtr := reflect.ValueOf(body).Elem()
-
-	switch elem.Kind() {
-	case reflect.Struct:
-		for i := range valuePtr.NumField() {
-			field := elem.Field(i)
-			fieldPointer := valuePtr.FieldByName(field.Name)
-			var err error
-			switch v := fieldPointer.Interface().(type) {
-			case bool, int8, uint8, int16, uint16, int32, uint32, int64, uint64, float32, float64:
-				err = binary.Write(w, binary.BigEndian, v)
-			case string:
-				if err = binary.Write(w, binary.BigEndian, uint32(fieldPointer.Len())); err == nil {
-					_, err = w.Write([]byte(v))
-				}
-			case time.Time:
-				err = binary.Write(w, binary.BigEndian, v.UnixMicro())
-			case []byte:
-				if err = binary.Write(w, binary.BigEndian, uint32(len(v))); err == nil {
-					_, err = w.Write(v)
-				}
-			default:
-				if fieldPointer.IsNil() {
-					if err = binary.Write(w, binary.BigEndian, uint8(0)); err != nil {
-						return err
-					}
-					continue
-				}
-				if err = binary.Write(w, binary.BigEndian, uint8(1)); err != nil {
+		switch targetReflect.Type().Elem().Kind() {
+		case typeofBytes.Elem().Kind(): // Check if the element is a byte type
+			buff := make([]byte, targetReflect.Len())
+			for i := range targetReflect.Len() {
+				buff[i] = targetReflect.Index(i).Interface().(byte)
+			}
+			_, err := w.Write(buff)
+			return err
+		default:
+			for i := range targetReflect.Len() {
+				if err := NewEncode(w, targetReflect.Index(i).Interface()); err != nil {
 					return err
 				}
-				err = NewEncode(w, v)
+			}
+		}
+	case reflect.Pointer:
+		return NewEncode(w, targetReflect.Elem().Interface()) // Ignore point and reencode
+	case reflect.Struct:
+		BinaryMarshaler, isBinaryMarshaler := targetReflect.Interface().(encoding.BinaryMarshaler)
+		TextMarshaler, isTextMarshaler := targetReflect.Interface().(encoding.TextMarshaler)
+		if isBinaryMarshaler || isTextMarshaler {
+			var data []byte
+			var err error
+			if isBinaryMarshaler {
+				data, err = BinaryMarshaler.MarshalBinary()
+			} else {
+				data, err = TextMarshaler.MarshalText()
 			}
 			if err != nil {
 				return err
 			}
+			return NewEncode(w, data)
 		}
-	}
-	return nil
-}
 
-func NewDecode(r io.Reader, body any) error {
-	if body == nil {
-		return nil
-	}
-
-	elem := reflect.TypeOf(body).Elem()
-	valuePtr := reflect.ValueOf(body).Elem()
-	fmt.Println(elem.String())
-
-	switch elem.Kind() {
-	case reflect.Struct:
-		for i := range valuePtr.NumField() {
-			field := elem.Field(i)
-			fieldPointer := valuePtr.FieldByName(field.Name)
-			fmt.Printf("Decode: %s: %s\n", field.Name, field.Type.String())
-
-			newValue := reflect.New(fieldPointer.Type()).Interface()
-			var err error
-			switch fieldPointer.Kind() {
-			case reflect.Float32, reflect.Float64, reflect.Int8, reflect.Uint8, reflect.Int16, reflect.Uint16, reflect.Int32, reflect.Uint32, reflect.Int64, reflect.Uint64:
-				err = binary.Read(r, binary.BigEndian, newValue)
-			case reflect.String:
-				var size uint32
-				if err = binary.Read(r, binary.BigEndian, &size); err == nil {
-					buff := make([]byte, size)
-					if _, err = r.Read(buff); err == nil {
-						fieldPointer.SetString(string(buff))
-						continue
-					}
-				}
-			case reflect.Array: // [2]any
-				if fieldPointer.Field(0).Type().String() == typeofByte.String() {
-					if _, err = r.Read(newValue.([]byte)); err != nil {
-						return err
-					}
-					fieldPointer.Set(reflect.Append(fieldPointer.Elem(), reflect.ValueOf(newValue)))
-					continue
-				}
-				for i := range fieldPointer.Len() {
-					newValue := reflect.New(fieldPointer.Field(i).Type()).Interface()
-					if err = NewDecode(r, newValue); err != nil {
-						return err
-					}
-					fieldPointer.Field(i).Set(reflect.ValueOf(newValue))
+		typeof := targetReflect.Type()
+		for i := range targetReflect.NumField() {
+			if tag := typeof.Field(i).Tag.Get(selectorTagName); tag == "-" || !targetReflect.Field(i).IsValid() {
+				continue
+			} else if targetReflect.Field(i).Type().Kind() == reflect.Pointer {
+				if targetReflect.IsZero() || !targetReflect.CanInterface() || targetReflect.Field(i).IsNil() {
+					return binary.Write(w, binary.BigEndian, int8(0))
+				} else if err := binary.Write(w, binary.BigEndian, int8(1)); err != nil {
+					return err
+				} else if err := NewEncode(w, targetReflect.Field(i).Elem().Interface()); err != nil {
+					return err
 				}
 				continue
-			case reflect.Slice: // []any
-				var size uint32
-				if err = binary.Read(r, binary.BigEndian, &size); err != nil {
-					return err
-				} else if fieldPointer.Type().String() == "[]uint8" || fieldPointer.Type().String() == "*[]uint8" {
-					buff := make([]byte, size)
-					if _, err = r.Read(buff); err != nil {
-						return err
-					}
-					fieldPointer.Set(reflect.ValueOf(buff))
-					continue
-				}
-			default:
-				switch fieldPointer.Type().String() {
-				case "time.Time":
-					var timestap int64
-					if err = binary.Read(r, binary.BigEndian, &timestap); err == nil {
-						fieldPointer.Set(reflect.ValueOf(time.UnixMicro(timestap)))
-						continue
-					}
-				default:
-					if strings.HasPrefix(fieldPointer.Type().String(), "*") {
-						var ok uint8
-						if err = binary.Read(r, binary.BigEndian, &ok); err == nil {
-							if ok == 0 {
-								continue
-							}
-						}
-					}
-					if err == nil {
-						err = NewDecode(r, newValue)
-					}
-				}
 			}
-
-			if err != nil {
+			if err := NewEncode(w, targetReflect.Field(i).Interface()); err != nil {
 				return err
 			}
-			fieldPointer.Set(reflect.ValueOf(newValue).Elem())
 		}
+	case reflect.String:
+		if err := binary.Write(w, binary.BigEndian, int64(targetReflect.Len())); err != nil {
+			return err
+		}
+		_, err := w.Write([]byte(targetReflect.String()))
+		return err
+	case reflect.Bool:
+		if targetReflect.Bool() {
+			return binary.Write(w, binary.BigEndian, int8(1))
+		}
+		return binary.Write(w, binary.BigEndian, int8(0))
+	case reflect.Uint8, reflect.Int8, reflect.Int16, reflect.Uint16, reflect.Int32, reflect.Uint32, reflect.Int64, reflect.Uint64, reflect.Float32, reflect.Float64:
+		return binary.Write(w, binary.BigEndian, target)
+	default:
+		return fmt.Errorf("set valid struct or array/slice, or any primary values")
 	}
 
 	return nil
 }
 
-func Unmashall(b []byte, target any) error {
-	return NewDecode(bytes.NewReader(b), target)
-}
+func NewDecode(r io.Reader, target any) error {
+	if target == nil {
+		return binary.Read(r, binary.BigEndian, int8(0))
+	}
+	targetReflect := reflect.ValueOf(target).Elem()
+	switch targetReflect.Type().Kind() {
+	case reflect.Slice:
+		var size int64
+		if err := binary.Read(r, binary.BigEndian, &size); err != nil {
+			return err
+		}
 
-func Marshall(target any) ([]byte, error) {
-	buff := new(bytes.Buffer)
-	err := NewEncode(buff, target)
-	return buff.Bytes(), err
+		switch targetReflect.Type().Elem().Kind() {
+		case typeofBytes.Elem().Kind():
+			buff := make([]byte, size)
+			if _, err := r.Read(buff); err != nil {
+				return err
+			}
+			targetReflect.SetBytes(buff)
+		default:
+			for i := range int(size) {
+				data := reflect.New(targetReflect.Field(i).Type().Elem()).Interface()
+				if err := NewDecode(r, data); err != nil {
+					return err
+				}
+				targetReflect.Set(reflect.AppendSlice(targetReflect, reflect.ValueOf(data)))
+			}
+		}
+		return nil
+	case reflect.Array:
+		var size int64
+		if err := binary.Read(r, binary.BigEndian, &size); err != nil {
+			return err
+		} else if size != int64(targetReflect.Len()) {
+			return fmt.Errorf("size mismatch: expected %d, got %d", targetReflect.Len(), size)
+		}
+		switch targetReflect.Type().Elem().Kind() {
+		case typeofBytes.Elem().Kind(): // Check if the element is a byte type
+			buff := make([]byte, size)
+			if _, err := r.Read(buff); err != nil {
+				return err
+			}
+			for i, data := range buff {
+				targetReflect.Index(i).Set(reflect.ValueOf(data))
+			}
+		default:
+			for i := 0; i < int(size); i++ {
+				elem := reflect.New(targetReflect.Type().Elem()).Interface()
+				if err := NewDecode(r, elem); err != nil {
+					return err
+				}
+				targetReflect.Index(i).Set(reflect.ValueOf(elem).Elem())
+			}
+		}
+		return nil
+	case reflect.String:
+		var err error
+		var size int64
+		if err = binary.Read(r, binary.BigEndian, &size); err == nil {
+			buff := make([]byte, size)
+			if _, err = r.Read(buff); err == nil {
+				targetReflect.SetString(string(buff))
+			}
+		}
+		return err
+	case reflect.Bool:
+		var boolInt int8
+		if err := binary.Read(r, binary.BigEndian, &boolInt); err != nil {
+			return err
+		}
+		targetReflect.SetBool(boolInt == 1)
+	case reflect.Uint8, reflect.Int8, reflect.Int16, reflect.Uint16, reflect.Int32, reflect.Uint32, reflect.Int64, reflect.Uint64, reflect.Float32, reflect.Float64:
+		return binary.Read(r, binary.BigEndian, target)
+	case reflect.Struct:
+		BinaryMarshaler, isBinaryMarshaler := target.(encoding.BinaryUnmarshaler)
+		TextMarshaler, isTextMarshaler := target.(encoding.TextUnmarshaler)
+		if isBinaryMarshaler || isTextMarshaler {
+			var data []byte
+			var err error
+			if err = NewDecode(r, &data); err != nil {
+				return err
+			} else if isBinaryMarshaler {
+				return BinaryMarshaler.UnmarshalBinary(data)
+			}
+			return TextMarshaler.UnmarshalText(data)
+		}
+		for i := range targetReflect.NumField() {
+			if tag := targetReflect.Type().Field(i).Tag.Get(selectorTagName); tag == "-" || !targetReflect.Field(i).CanSet() {
+				continue
+			}
+
+			if targetReflect.Field(i).Type().Kind() == reflect.Pointer {
+				var ok bool
+				if err := NewDecode(r, &ok); err != nil {
+					return err
+				} else if ok {
+					data := reflect.New(targetReflect.Field(i).Type().Elem()).Interface()
+					if err := NewDecode(r, data); err != nil {
+						return err
+					}
+					targetReflect.Field(i).Set(reflect.ValueOf(data))
+				}
+				continue
+			}
+			data := reflect.New(targetReflect.Field(i).Type()).Interface()
+			if err := NewDecode(r, data); err != nil {
+				return err
+			}
+			targetReflect.Field(i).Set(reflect.ValueOf(data).Elem())
+		}
+	case reflect.Interface:
+		BinaryMarshaler, isBinaryMarshaler := target.(encoding.BinaryUnmarshaler)
+		TextMarshaler, isTextMarshaler := target.(encoding.TextUnmarshaler)
+		if isBinaryMarshaler || isTextMarshaler {
+			var data []byte
+			var err error
+			if err = NewDecode(r, &data); err != nil {
+				return err
+			} else if isBinaryMarshaler {
+				return BinaryMarshaler.UnmarshalBinary(data)
+			}
+			return TextMarshaler.UnmarshalText(data)
+		}
+	default:
+		return fmt.Errorf("set valid struct or array/slice, or any primary values, kind %s", targetReflect.Type().Kind())
+	}
+	return nil
 }
