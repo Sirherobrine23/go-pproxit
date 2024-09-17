@@ -14,6 +14,7 @@ import (
 	"github.com/sandertv/go-raknet"
 
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/pipe"
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/structcode"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
 
@@ -52,7 +53,7 @@ func CreateClient(Addres []netip.AddrPort, Token [36]byte) (*Client, error) {
 }
 
 func (client *Client) Send(req proto.Request) error {
-	return proto.WriteRequest(client.Conn, req)
+	return structcode.NewEncode(client.Conn, req)
 }
 
 func (client *Client) Setup() error {
@@ -72,8 +73,8 @@ func (client *Client) Setup() error {
 				return err
 			}
 
-			res, err := proto.ReaderResponse(bytes.NewBuffer(buff[:n]))
-			if err != nil {
+			var res proto.Response
+			if err = structcode.NewDecode(bytes.NewBuffer(buff[:n]), &res); err != nil {
 				if opt, isOpt := err.(*net.OpError); isOpt {
 					if opt.Timeout() {
 						<-time.After(time.Second * 3)
@@ -133,8 +134,8 @@ func (client *Client) handlers() {
 			go client.Send(proto.Request{Ping: &now})
 		}
 
-		res, err := proto.ReaderResponse(bufioBuff)
-
+		var res proto.Response
+		err := structcode.NewDecode(bufioBuff, &res)
 		if err != nil {
 			fmt.Println(err)
 			if err == proto.ErrInvalidBody {
@@ -156,8 +157,8 @@ func (client *Client) handlers() {
 			var auth = proto.AgentAuth(client.Token)
 			for {
 				client.Send(proto.Request{AgentAuth: &auth})
-				res, err := proto.ReaderResponse(client.Conn)
-				if err != nil {
+				var res proto.Response
+				if err = structcode.NewDecode(client.Conn, &res); err != nil {
 					panic(err) // TODO: Require fix to agent shutdown graced
 				} else if res.Unauthorized {
 					return

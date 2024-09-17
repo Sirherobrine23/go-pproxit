@@ -36,7 +36,7 @@ var CmdServer = cli.Command{
 		if err != nil {
 			return err
 		}
-		pproxitServer, err := server.NewController(calls, netip.AddrPortFrom(netip.IPv4Unspecified(), uint16(ctx.Int("port"))))
+		pproxitServer, err := server.NewController(calls, netip.AddrPortFrom(netip.IPv4Unspecified(), uint16(ctx.Int("port"))).String())
 		if err != nil {
 			return err
 		}

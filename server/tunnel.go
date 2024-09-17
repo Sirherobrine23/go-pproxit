@@ -1,12 +1,16 @@
 package server
 
 import (
+	"bytes"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/netip"
+	"os"
 	"time"
 
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/structcode"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
@@ -58,7 +62,12 @@ func (tun *Tunnel) Close() error {
 }
 
 func (tun *Tunnel) send(res proto.Response) error {
-	return proto.WriteResponse(tun.RootConn, res)
+	buff := new(bytes.Buffer)
+	if err := structcode.NewEncode(buff, res); err != nil {
+		return err
+	}
+	_, err := tun.RootConn.Write(buff.Bytes())
+	return err
 }
 
 type toWr struct {
@@ -118,11 +127,11 @@ func (tun *Tunnel) Setup() {
 
 	for {
 		log.Printf("waiting request from %s", tun.RootConn.RemoteAddr().String())
-		req, err := proto.ReaderRequest(tun.RootConn)
-		if err != nil {
+		var req proto.Request
+		if err := structcode.NewDecode(tun.RootConn, &req); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
 			return
 		}
-
 		if req.AgentAuth != nil {
 			go tun.send(proto.Response{
 				AgentInfo: &proto.AgentInfo{

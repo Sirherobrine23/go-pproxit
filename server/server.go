@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 
 	"github.com/sandertv/go-raknet"
 
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/structcode"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
 
@@ -27,11 +27,12 @@ type Server struct {
 	Agents       map[string]*Tunnel
 }
 
-func NewController(calls ServerCall, local netip.AddrPort) (*Server, error) {
-	conn, err := raknet.Listen(local.String())
+func NewController(calls ServerCall, local string) (*Server, error) {
+	conn, err := raknet.Listen(local)
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("Listen on %s\n", conn.Addr().String())
 	tuns := &Server{
 		ControllConn: conn,
 		ControlCalls: calls,
@@ -55,36 +56,36 @@ func (controller *Server) handler() {
 
 func (controller *Server) handlerConn(conn net.Conn) {
 	defer conn.Close() // End agent accepted
-	var req *proto.Request
-	var tunnelInfo TunnelInfo
-	var err error
 	for {
-		if req, err = proto.ReaderRequest(conn); err != nil {
+		var tunnelInfo TunnelInfo
+		var err error
+		var req proto.Request
+		if err = structcode.NewDecode(conn, &req); err != nil {
 			return
 		}
 
 		if req.AgentAuth == nil {
-			proto.WriteResponse(conn, proto.Response{SendAuth: true})
+			structcode.NewEncode(conn, proto.Response{SendAuth: true})
 			continue
 		} else if tunnelInfo, err = controller.ControlCalls.AgentAuthentication([36]byte(req.AgentAuth[:])); err != nil {
 			if err == ErrAuthAgentFail {
-				proto.WriteResponse(conn, proto.Response{Unauthorized: true})
+				structcode.NewEncode(conn, proto.Response{Unauthorized: true})
 				return
 			}
-			proto.WriteResponse(conn, proto.Response{BadRequest: true})
+			structcode.NewEncode(conn, proto.Response{BadRequest: true})
 			continue
 		}
+
+		// Close current tunnel
+		if tun, ok := controller.Agents[string(req.AgentAuth[:])]; ok {
+			fmt.Println("closing old tunnel")
+			tun.Close() // Close connection
+		}
+
+		var tun = &Tunnel{RootConn: conn, TunInfo: tunnelInfo, UDPClients: make(map[string]net.Conn), TCPClients: make(map[string]net.Conn)}
+		controller.Agents[string(req.AgentAuth[:])] = tun
+		tun.Setup()
+		delete(controller.Agents, string(req.AgentAuth[:]))
 		break
 	}
-
-	// Close current tunnel
-	if tun, ok := controller.Agents[string(req.AgentAuth[:])]; ok {
-		fmt.Println("closing old tunnel")
-		tun.Close() // Close connection
-	}
-
-	var tun = &Tunnel{RootConn: conn, TunInfo: tunnelInfo, UDPClients: make(map[string]net.Conn), TCPClients: make(map[string]net.Conn)}
-	controller.Agents[string(req.AgentAuth[:])] = tun
-	tun.Setup()
-	delete(controller.Agents, string(req.AgentAuth[:]))
 }
