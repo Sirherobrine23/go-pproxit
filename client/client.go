@@ -1,8 +1,6 @@
 package client
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,8 +9,6 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/sandertv/go-raknet"
-
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/pipe"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/structcode"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
@@ -20,6 +16,7 @@ import (
 
 var (
 	ErrCannotConnect error = errors.New("cannot connect to controller")
+	ErrUnathorized   error = errors.New("cannot auth in controller")
 )
 
 type NewClient struct {
@@ -28,17 +25,17 @@ type NewClient struct {
 }
 
 type Client struct {
-	Token        [36]byte
-	RemoteAdress []netip.AddrPort
+	Token        []byte
+	RemoteAdress netip.AddrPort
 	clientsTCP   map[string]net.Conn
 	clientsUDP   map[string]net.Conn
 	NewClient    chan NewClient
 
-	Conn      *raknet.Conn
+	Conn      net.Conn
 	AgentInfo *proto.AgentInfo
 }
 
-func CreateClient(Addres []netip.AddrPort, Token [36]byte) (*Client, error) {
+func CreateClient(Addres netip.AddrPort, Token []byte) (*Client, error) {
 	cli := &Client{
 		Token:        Token,
 		RemoteAdress: Addres,
@@ -52,48 +49,28 @@ func CreateClient(Addres []netip.AddrPort, Token [36]byte) (*Client, error) {
 	return cli, nil
 }
 
-func (client *Client) Send(req proto.Request) error {
-	return structcode.NewEncode(client.Conn, req)
-}
-
 func (client *Client) Setup() error {
-	for _, addr := range client.RemoteAdress {
-		var err error
-		if client.Conn, err = raknet.Dial(addr.String()); err != nil {
+	var err error
+	if client.Conn, err = net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(client.RemoteAdress)); err != nil {
+		return err
+	}
+	for attemps := 0; attemps < 18; attemps++ {
+		if err := structcode.NewEncode(client.Conn, proto.Request{AgentAuth: &client.Token}); err != nil {
+			return err
+		}
+
+		var res proto.Response
+		if err = structcode.NewDecode(client.Conn, &res); err != nil {
+			return fmt.Errorf("decode status from server, error: %s", err.Error())
+		} else if res.Unauthorized {
+			return ErrUnathorized
+		} else if res.AgentInfo == nil {
 			continue
 		}
-		client.Conn.SetReadDeadline(time.Now().Add(time.Second * 5))
-		var auth = proto.AgentAuth(client.Token)
-		for {
-			client.Send(proto.Request{AgentAuth: &auth})
 
-			buff := make([]byte, 1024)
-			n, err := client.Conn.Read(buff)
-			if err != nil {
-				return err
-			}
-
-			var res proto.Response
-			if err = structcode.NewDecode(bytes.NewBuffer(buff[:n]), &res); err != nil {
-				if opt, isOpt := err.(*net.OpError); isOpt {
-					if opt.Timeout() {
-						<-time.After(time.Second * 3)
-						client.Send(proto.Request{AgentAuth: &auth})
-						continue
-					}
-				}
-				// return err
-				break
-			} else if res.Unauthorized {
-				return ErrCannotConnect
-			} else if res.AgentInfo == nil {
-				continue
-			}
-			client.AgentInfo = res.AgentInfo
-			client.Conn.SetReadDeadline(*new(time.Time)) // clear timeout
-			go client.handlers()
-			return nil
-		}
+		client.AgentInfo = res.AgentInfo
+		go client.handlers()
+		return nil
 	}
 	return ErrCannotConnect
 }
@@ -105,7 +82,7 @@ type toWr struct {
 }
 
 func (t toWr) Write(w []byte) (int, error) {
-	err := t.tun.Send(proto.Request{
+	err := structcode.NewEncode(t.tun.Conn, proto.Request{
 		DataTX: &proto.ClientData{
 			Client: proto.Client{
 				Client: t.To,
@@ -126,16 +103,17 @@ func (tun *Client) GetTargetWrite(Proto uint8, To netip.AddrPort) io.Writer {
 }
 
 func (client *Client) handlers() {
-	bufioBuff := bufio.NewReader(client.Conn)
 	var lastPing int64 = 0
 	for {
 		if time.Now().UnixMilli()-lastPing > 3_000 {
-			var now = time.Now()
-			go client.Send(proto.Request{Ping: &now})
+			var req proto.Request
+			req.Ping = new(time.Time)
+			*req.Ping = time.Now()
+			go structcode.NewEncode(client.Conn, req)
 		}
 
 		var res proto.Response
-		err := structcode.NewDecode(bufioBuff, &res)
+		err := structcode.NewDecode(client.Conn, &res)
 		if err != nil {
 			fmt.Println(err)
 			if err == proto.ErrInvalidBody {
@@ -154,9 +132,9 @@ func (client *Client) handlers() {
 		if res.Unauthorized || res.NotListened {
 			panic(fmt.Errorf("cannot recive requests")) // TODO: Require fix to agent shutdown graced
 		} else if res.SendAuth {
-			var auth = proto.AgentAuth(client.Token)
+			var auth = client.Token
 			for {
-				client.Send(proto.Request{AgentAuth: &auth})
+				structcode.NewEncode(client.Conn, proto.Request{AgentAuth: &auth})
 				var res proto.Response
 				if err = structcode.NewDecode(client.Conn, &res); err != nil {
 					panic(err) // TODO: Require fix to agent shutdown graced

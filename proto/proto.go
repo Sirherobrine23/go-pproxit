@@ -7,8 +7,8 @@ import (
 
 const (
 	ProtoBoth uint8 = iota // TCP+UDP Protocol
-	ProtoTCP  uint8 = iota // TCP Protocol
-	ProtoUDP  uint8 = iota // UDP Protocol
+	ProtoTCP               // TCP Protocol
+	ProtoUDP               // UDP Protocol
 
 	DataSize       uint64 = 10_000                // Default listener data recive and send
 	PacketSize     uint64 = 800                   // Packet to without data only requests and response headers

@@ -25,12 +25,12 @@ type User struct {
 }
 
 type Tun struct {
-	ID        int64    `xorm:"pk"`                  // Tunnel ID
-	User      int64    `xorm:"notnull"`             // Agent ID
-	Token     [36]byte `xorm:"blob notnull unique"` // Tunnel Token
-	Proto     uint8    `xorm:"default 3"`           // Proto accept
-	TPCListen uint16   // Port listen TCP agent
-	UDPListen uint16   // Port listen UDP agent
+	ID        int64  `xorm:"pk"`                  // Tunnel ID
+	User      int64  `xorm:"notnull"`             // Agent ID
+	Token     []byte `xorm:"blob notnull unique"` // Tunnel Token
+	Proto     uint8  `xorm:"default 3"`           // Proto accept
+	TPCListen uint16 // Port listen TCP agent
+	UDPListen uint16 // Port listen UDP agent
 }
 
 type Ping struct {
@@ -104,7 +104,7 @@ func (tun *TunCallbcks) BlockedAddr(AddrPort string) bool {
 func (tun *TunCallbcks) AgentPing(agent, server time.Time) {
 	c, _ := tun.XormEngine.Count(Ping{})
 	tun.XormEngine.InsertOne(&Ping{
-		ID: c,
+		ID:         c,
 		TunID:      tun.tunID,
 		ServerTime: server,
 		AgentTime:  agent,
@@ -130,7 +130,7 @@ func (tun *TunCallbcks) RegisterTX(client netip.AddrPort, Size int, Proto uint8)
 	})
 }
 
-func (caller *serverCalls) AgentAuthentication(Token [36]byte) (server.TunnelInfo, error) {
+func (caller *serverCalls) AgentAuthentication(Token []byte) (server.TunnelInfo, error) {
 	var tun = Tun{Token: Token}
 	if ok, err := caller.XormEngine.Get(&tun); err != nil || !ok {
 		if !ok {

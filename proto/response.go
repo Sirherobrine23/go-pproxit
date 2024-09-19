@@ -5,17 +5,6 @@ import (
 	"time"
 )
 
-const (
-	ResUnauthorized uint64 = iota // Request not processed and ignored
-	ResBadRequest   uint64 = iota // Request cannot process and ignored
-	ResCloseClient  uint64 = iota // Controller closed connection
-	ResClientData   uint64 = iota // Controller accepted data
-	ResSendAuth     uint64 = iota // Send token to controller
-	ResAgentInfo    uint64 = iota // Agent info
-	ResPong         uint64 = iota // Ping response
-	ResNotListening uint64 = iota // Resize buffer size
-)
-
 type AgentInfo struct {
 	Protocol         uint8          // Proto supported (proto.ProtoTCP, proto.ProtoUDP or proto.ProtoBoth)
 	UDPPort, TCPPort uint16         // Controller port listened

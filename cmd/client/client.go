@@ -28,14 +28,6 @@ var CmdClient = cli.Command{
 			Required: true,
 			Usage:    "agent token",
 			Aliases:  []string{"t"},
-			Action: func(ctx *cli.Context, s string) error {
-				if _, err := uuid.Parse(s); err == nil {
-					return nil
-				} else if len(s) == len(proto.AgentAuth{}) {
-					return nil
-				}
-				return fmt.Errorf("set valid token")
-			},
 		},
 		&cli.StringFlag{
 			Name:     "dial",
@@ -49,7 +41,8 @@ var CmdClient = cli.Command{
 		if addr, err = netip.ParseAddrPort(ctx.String("url")); err != nil {
 			return
 		}
-		client, err := client.CreateClient([]netip.AddrPort{addr}, [36]byte([]byte(ctx.String("token"))))
+		key, _ := uuid.MustParse(ctx.String("token")).MarshalBinary()
+		client, err := client.CreateClient(addr, key)
 		if err != nil {
 			return err
 		}

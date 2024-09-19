@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -62,12 +61,7 @@ func (tun *Tunnel) Close() error {
 }
 
 func (tun *Tunnel) send(res proto.Response) error {
-	buff := new(bytes.Buffer)
-	if err := structcode.NewEncode(buff, res); err != nil {
-		return err
-	}
-	_, err := tun.RootConn.Write(buff.Bytes())
-	return err
+	return structcode.NewEncode(tun.RootConn, res)
 }
 
 type toWr struct {
