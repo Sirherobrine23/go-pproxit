@@ -42,3 +42,6 @@ type ClientData struct {
 	Client Client // Client Destination
 	Data   []byte `json:"-"` // Bytes to send
 }
+
+// Return pointer to value
+func Point[T any](val T) *T { return &val }

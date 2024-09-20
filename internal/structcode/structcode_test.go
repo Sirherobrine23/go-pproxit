@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/proto"
 )
 
 type mapTest map[string]mapStr

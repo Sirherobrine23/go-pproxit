@@ -1,4 +1,4 @@
-package server
+package gopproxit_test
 
 import (
 	"fmt"
@@ -7,8 +7,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/server"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/proto"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/server"
 	"xorm.io/xorm"
 	"xorm.io/xorm/names"
 )
@@ -156,4 +156,19 @@ func (caller *serverCalls) AgentAuthentication(Token []byte) (server.TunnelInfo,
 		UDPPort:   tun.UDPListen,
 		Callbacks: &TunCallbcks{tunID: tun.ID, XormEngine: caller.XormEngine, Locker: caller.Locker},
 	}, nil
+}
+
+func (caller *serverCalls) RegisterRandomUser() []byte {
+	token := []byte{0, 0, 12, 14, 22, 89, 255, 81}
+	caller.XormEngine.Insert(
+		&User{ID: 0, AccountStatus: 1, FullName: "Radon user", Username: "random"},
+		&Tun{
+			User:      0,
+			Token:     token,
+			Proto:     proto.ProtoBoth,
+			TPCListen: 5522,
+			UDPListen: 5522,
+		},
+	)
+	return token
 }

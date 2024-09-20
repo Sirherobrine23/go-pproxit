@@ -8,8 +8,8 @@ import (
 	"net/netip"
 	"os"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/structcode"
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/internal/structcode"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/proto"
 )
 
 var ErrAuthAgentFail error = errors.New("cannot authenticate agent") // Send unathorized client and close new accepts from current port
@@ -26,8 +26,8 @@ type Server struct {
 	Agents       map[string]*Tunnel
 }
 
-func NewController(calls ServerCall, local string) (*Server, error) {
-	conn, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(netip.MustParseAddrPort(local)))
+func NewController(calls ServerCall, port uint16) (*Server, error) {
+	conn, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), port)))
 	if err != nil {
 		return nil, err
 	}

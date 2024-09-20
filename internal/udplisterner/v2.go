@@ -9,7 +9,7 @@ import (
 	"net/netip"
 	"sync"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/pipe"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/internal/pipe"
 )
 
 type writeRoot struct {
@@ -83,10 +83,10 @@ func (udpListen *UDPServer) handler() {
 			c.bufferCache = new(bytes.Buffer)
 			c.bufioCache = bufio.NewReader(c.bufferCache)
 
-			c.fromAgent, c.toClient = pipe.CreatePipe(from, from)
+			c.fromAgent, c.toClient = pipe.CreatePipe(from.AddrPort(), from.AddrPort())
 
 			udpListen.peers[from.String()] = c
-			go func(){
+			go func() {
 				for _, exist := udpListen.peers[from.String()]; exist; {
 					io.Copy(c.fromAgent, c.bufioCache)
 				}

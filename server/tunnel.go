@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -9,9 +8,9 @@ import (
 	"os"
 	"time"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/structcode"
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/udplisterner"
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/internal/structcode"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/internal/udplisterner"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/proto"
 )
 
 type TunnelCall interface {
@@ -124,8 +123,6 @@ func (tun *Tunnel) Setup() {
 			fmt.Fprintln(os.Stderr, err.Error())
 			return
 		}
-		d, _ := json.Marshal(req)
-		fmt.Println(string(d))
 
 		if req.AgentAuth != nil {
 			go tun.send(proto.Response{

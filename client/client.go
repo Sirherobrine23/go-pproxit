@@ -1,7 +1,6 @@
 package client
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,70 +8,16 @@ import (
 	"net/netip"
 	"time"
 
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/pipe"
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/internal/structcode"
-	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/internal/pipe"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/internal/structcode"
+	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/proto"
 )
 
-var (
-	ErrCannotConnect error = errors.New("cannot connect to controller")
-	ErrUnathorized   error = errors.New("cannot auth in controller")
-)
+var ErrUnauthorized error = errors.New("cannot auth to controller")
 
-type NewClient struct {
+type remoteClient struct {
 	Client proto.Client
-	Writer net.Conn
-}
-
-type Client struct {
-	Token        []byte
-	RemoteAdress netip.AddrPort
-	clientsTCP   map[string]net.Conn
-	clientsUDP   map[string]net.Conn
-	NewClient    chan NewClient
-
-	Conn      net.Conn
-	AgentInfo *proto.AgentInfo
-}
-
-func CreateClient(Addres netip.AddrPort, Token []byte) (*Client, error) {
-	cli := &Client{
-		Token:        Token,
-		RemoteAdress: Addres,
-		clientsTCP:   make(map[string]net.Conn),
-		clientsUDP:   make(map[string]net.Conn),
-		NewClient:    make(chan NewClient),
-	}
-	if err := cli.Setup(); err != nil {
-		return cli, err
-	}
-	return cli, nil
-}
-
-func (client *Client) Setup() error {
-	var err error
-	if client.Conn, err = net.DialTCP("tcp", nil, net.TCPAddrFromAddrPort(client.RemoteAdress)); err != nil {
-		return err
-	}
-	for attemps := 0; attemps < 18; attemps++ {
-		if err := structcode.NewEncode(client.Conn, proto.Request{AgentAuth: &client.Token}); err != nil {
-			return err
-		}
-
-		var res proto.Response
-		if err = structcode.NewDecode(client.Conn, &res); err != nil {
-			return fmt.Errorf("decode status from server, error: %s", err.Error())
-		} else if res.Unauthorized {
-			return ErrUnathorized
-		} else if res.AgentInfo == nil {
-			continue
-		}
-
-		client.AgentInfo = res.AgentInfo
-		go client.handlers()
-		return nil
-	}
-	return ErrCannotConnect
+	Conn   net.Conn
 }
 
 type toWr struct {
@@ -91,113 +36,218 @@ func (t toWr) Write(w []byte) (int, error) {
 			},
 		},
 	}
-	d, _ := json.Marshal(data)
-	fmt.Println(string(d))
 	if err := structcode.NewEncode(t.tun.Conn, data); err != nil {
 		return 0, err
 	}
 	return len(w), nil
 }
 
-func (tun *Client) GetTargetWrite(Proto proto.Protoc, To netip.AddrPort) io.Writer {
-	return &toWr{Proto: Proto, To: To, tun: tun}
+type Client struct {
+	Token    []byte                  // Token to auth in Controller if required
+	Conn     net.Conn                // Connection from Controller
+	Agent    *proto.AgentInfo        // Agent info to show in UI and listened on controller
+	TCPConns map[string]*net.TCPConn // Clients connections to TCP
+	UDPConns map[string]*net.UDPConn // Clients connections to UDP
+	LastPong time.Time               // Last Pong time
+	Latency  int64                   // Latency response in ms from last Pong
+
+	newListen chan remoteClient // new clients listener in Controller
+	cachErr   chan error        // Pipe errors to channel
+	closedErr bool
 }
 
-func (client *Client) handlers() {
-	var lastPing time.Time = time.Date(0, 0, 0, 0, 0, 0, 0, time.Local)
+func NewClient(Address string, AuthToken []byte) (*Client, error) {
+	var clientStr Client
+	var err error
+
+	// Dial connection
+	if clientStr.Conn, err = net.Dial("tcp", Address); err != nil {
+		return nil, err
+	}
+
+	var res proto.Response
+	if err := structcode.NewEncode(clientStr.Conn, proto.Request{Ping: proto.Point(time.Now())}); err != nil {
+		return nil, err
+	} else if err := structcode.NewDecode(clientStr.Conn, &res); err != nil {
+		return nil, err
+	} else if res.SendAuth && len(AuthToken) == 0 {
+		return nil, ErrUnauthorized
+	}
+
+	// Auth Session
+	if clientStr.Token = AuthToken; len(clientStr.Token) > 0 {
+		if err := clientStr.Auth(); err != nil {
+			clientStr.Conn.Close()
+			return nil, err
+		}
+	}
+
+	clientStr.cachErr = make(chan error)
+	clientStr.newListen = make(chan remoteClient)
+	clientStr.TCPConns = make(map[string]*net.TCPConn)
+	clientStr.UDPConns = make(map[string]*net.UDPConn)
+	go clientStr.handle() // Process requests
+	return &clientStr, nil
+}
+
+// Wait for any error, if catch error close connection and return error
+func (client *Client) WaitCloseError() error {
+	if err, ok := <-client.cachErr; ok {
+		if err != nil && client.Conn != nil {
+			client.Close()
+		}
+		return err
+	}
+	return io.EOF
+}
+
+// Wait for any error
+func (client *Client) WaitError() error {
+	if err, ok := <-client.cachErr; ok {
+		return err
+	} else if client.Conn == nil {
+		return io.EOF
+	}
+	return nil
+}
+
+// Close Clients and Controller connection
+func (client *Client) Close() error {
+	for remoteClient := range client.TCPConns {
+		d := client.TCPConns[remoteClient]
+		if err := d.Close(); err != nil {
+			return err
+		}
+	}
+	for remoteClient := range client.UDPConns {
+		d := client.UDPConns[remoteClient]
+		if err := d.Close(); err != nil {
+			return err
+		}
+	}
+	if client.Conn != nil {
+		if err := client.Conn.Close(); err != nil {
+			return err
+		}
+		client.Conn = nil
+	}
+	client.closedErr = true
+	close(client.cachErr)
+	return nil
+}
+
+func (client *Client) sendErr(err error) {
+	if client.closedErr {
+		return
+	}
+	client.cachErr <- err
+}
+
+// Send auth to controller
+func (client *Client) Auth() error {
+	if err := structcode.NewEncode(client.Conn, proto.Request{AgentAuth: &client.Token}); err != nil {
+		return err
+	}
+	var res proto.Response
+	if err := structcode.NewDecode(client.Conn, &res); err != nil {
+		return err
+	} else if res.BadRequest || res.Unauthorized {
+		return ErrUnauthorized
+	} else if res.AgentInfo == nil {
+		return fmt.Errorf("cannot get agent info")
+	}
+
+	client.Agent = res.AgentInfo
+	return nil
+}
+
+// Process Controller responses
+func (client *Client) handle() {
 	for {
-		if time.Now().UnixMilli()-lastPing.UnixMilli() > 3_000_000 {
-			var req proto.Request
-			req.Ping = new(time.Time)
-			*req.Ping = time.Now()
-			go structcode.NewEncode(client.Conn, req)
+		var res proto.Response
+		if err := structcode.NewDecode(client.Conn, &res); err != nil {
+			client.sendErr(err)
+			return
 		}
 
-		var res proto.Response
-		err := structcode.NewDecode(client.Conn, &res)
-		if err != nil {
-			fmt.Println(err)
-			if err == proto.ErrInvalidBody {
+		// Resend auth to Controller
+		if res.SendAuth {
+			if err := client.Auth(); err != nil {
+				client.sendErr(err) // Send to handler
+				return
+			}
+			continue
+		} else if res.Unauthorized {
+			client.sendErr(ErrUnauthorized) // Close connection
+			return
+		}
+
+		// Update current agent info
+		if res.AgentInfo != nil {
+			client.Agent = res.AgentInfo
+		}
+
+		// Server pong time
+		if res.Pong != nil {
+			client.Latency = time.Now().UnixMilli() - res.Pong.UnixMilli()
+			client.LastPong = *res.Pong
+		}
+
+		// Write data to Client
+		if data := res.DataRX; res.DataRX != nil {
+			var ok bool
+			var clientConn net.Conn
+			clientAddr := res.DataRX.Client.Client.String()
+			switch res.DataRX.Client.Proto {
+			case proto.ProtoTCP:
+				if clientConn, ok = client.TCPConns[clientAddr]; !ok {
+					toClient, toAgent := pipe.CreatePipe(data.Client.Client, data.Client.Client)
+					go io.Copy(&toWr{data.Client.Proto, data.Client.Client, client}, toAgent)
+					client.newListen <- remoteClient{res.DataRX.Client, toClient}
+					clientConn = client.TCPConns[clientAddr]
+				}
+			case proto.ProtoUDP:
+				if clientConn, ok = client.UDPConns[clientAddr]; !ok {
+					toClient, toAgent := pipe.CreatePipe(data.Client.Client, data.Client.Client)
+					go io.Copy(&toWr{data.Client.Proto, data.Client.Client, client}, toAgent)
+					client.newListen <- remoteClient{res.DataRX.Client, toClient}
+					clientConn = client.UDPConns[clientAddr]
+				}
+			default:
 				continue
 			}
-			panic(err) // TODO: Require fix to agent shutdown graced
+			if _, err := clientConn.Write(res.DataRX.Data); err != nil {
+				client.sendErr(err)
+				continue
+			}
 		}
 
-		d, _ := json.Marshal(res)
-		fmt.Println(string(d))
-
-		if res.Pong != nil {
-			lastPing = *res.Pong
-			continue
-		}
-		if res.Unauthorized || res.NotListened {
-			panic(fmt.Errorf("cannot recive requests")) // TODO: Require fix to agent shutdown graced
-		} else if res.SendAuth {
-			var auth = client.Token
-			for {
-				structcode.NewEncode(client.Conn, proto.Request{AgentAuth: &auth})
-				var res proto.Response
-				if err = structcode.NewDecode(client.Conn, &res); err != nil {
-					panic(err) // TODO: Require fix to agent shutdown graced
-				} else if res.Unauthorized {
-					return
-				} else if res.AgentInfo == nil {
-					continue
-				}
-				client.AgentInfo = res.AgentInfo
-				break
-			}
-		} else if cl := res.CloseClient; res.CloseClient != nil {
-			if cl.Proto == proto.ProtoTCP {
-				if tun, ok := client.clientsTCP[cl.Client.String()]; ok {
-					tun.Close()
-				}
-			} else if cl.Proto == proto.ProtoUDP {
-				if tun, ok := client.clientsUDP[cl.Client.String()]; ok {
-					tun.Close()
-				}
-			}
-		} else if data := res.DataRX; res.DataRX != nil {
-			if data.Client.Proto == proto.ProtoTCP {
-				if _, ok := client.clientsTCP[data.Client.Client.String()]; !ok {
-					toClient, toAgent := pipe.CreatePipe(net.TCPAddrFromAddrPort(data.Client.Client), net.TCPAddrFromAddrPort(data.Client.Client))
-					client.NewClient <- NewClient{
-						Client: data.Client,
-						Writer: toClient,
+		if res.CloseClient != nil {
+			clientAddr := res.DataRX.Client.Client.String()
+			switch res.DataRX.Client.Proto {
+			case proto.ProtoTCP:
+				if clientConn, ok := client.TCPConns[clientAddr]; ok {
+					delete(client.TCPConns, clientAddr)
+					if err := clientConn.Close(); err != nil {
+						client.sendErr(err)
 					}
-					client.clientsTCP[data.Client.Client.String()] = toAgent
-					go func() {
-						io.Copy(client.GetTargetWrite(proto.ProtoTCP, data.Client.Client), toAgent)
-						delete(client.clientsTCP, data.Client.Client.String())
-					}()
 				}
-			} else if data.Client.Proto == proto.ProtoUDP {
-				if _, ok := client.clientsUDP[data.Client.Client.String()]; !ok {
-					toClient, toAgent := pipe.CreatePipe(net.UDPAddrFromAddrPort(data.Client.Client), net.UDPAddrFromAddrPort(data.Client.Client))
-					client.NewClient <- NewClient{
-						Client: data.Client,
-						Writer: toClient,
+			case proto.ProtoUDP:
+				if clientConn, ok := client.UDPConns[clientAddr]; ok {
+					delete(client.UDPConns, clientAddr)
+					if err := clientConn.Close(); err != nil {
+						client.sendErr(err)
 					}
-					client.clientsUDP[data.Client.Client.String()] = toAgent
-					go func() {
-						io.Copy(client.GetTargetWrite(proto.ProtoUDP, data.Client.Client), toAgent)
-						delete(client.clientsUDP, data.Client.Client.String())
-						toAgent.Close()
-					}()
 				}
-			}
-
-			if data.Client.Proto == proto.ProtoTCP {
-				if tun, ok := client.clientsTCP[data.Client.Client.String()]; ok {
-					go tun.Write(data.Data)
-				}
-			} else if data.Client.Proto == proto.ProtoUDP {
-				if tun, ok := client.clientsUDP[data.Client.Client.String()]; ok {
-					go tun.Write(data.Data)
-				}
-			} else if res.Pong != nil {
-				fmt.Println(res.Pong.String())
 			}
 		}
 	}
+}
+
+// Accept connection from Controller
+func (client *Client) Accept() (proto.Protoc, net.Conn, error) {
+	if conn, ok := <-client.newListen; ok {
+		return conn.Client.Proto, conn.Conn, nil
+	}
+	return 0, nil, io.EOF
 }

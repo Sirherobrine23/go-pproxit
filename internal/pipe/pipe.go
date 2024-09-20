@@ -7,6 +7,7 @@ package pipe
 import (
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"time"
@@ -81,7 +82,7 @@ func isClosedChan(c <-chan struct{}) bool {
 }
 
 type pipe struct {
-	localAddr, remoteAddr net.Addr
+	localAddr, remoteAddr netip.AddrPort
 
 	wrMu sync.Mutex // Serialize Write operations
 
@@ -108,7 +109,7 @@ type pipe struct {
 // Reads on one end are matched with writes on the other,
 // copying data directly between the two; there is no internal
 // buffering.
-func CreatePipe(LocalAddress, RemoteAddress net.Addr) (net.Conn, net.Conn) {
+func CreatePipe(LocalAddress, RemoteAddress netip.AddrPort) (net.Conn, net.Conn) {
 	cb1 := make(chan []byte)
 	cb2 := make(chan []byte)
 	cn1 := make(chan int)
@@ -139,8 +140,11 @@ func CreatePipe(LocalAddress, RemoteAddress net.Addr) (net.Conn, net.Conn) {
 	return p1, p2
 }
 
-func (p *pipe) LocalAddr() net.Addr  { return p.localAddr }
-func (p *pipe) RemoteAddr() net.Addr { return p.remoteAddr }
+type addr struct{ netip.AddrPort }
+
+func (addr) Network() string         { return "pipe" }
+func (p *pipe) LocalAddr() net.Addr  { return addr{p.localAddr} }
+func (p *pipe) RemoteAddr() net.Addr { return addr{p.remoteAddr} }
 
 func (p *pipe) Read(b []byte) (int, error) {
 	n, err := p.read(b)
