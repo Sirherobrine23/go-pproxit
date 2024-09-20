@@ -3,9 +3,11 @@ package server
 import (
 	"fmt"
 	"net/netip"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
+	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/server"
 	"xorm.io/xorm"
 	"xorm.io/xorm/names"
@@ -13,6 +15,7 @@ import (
 
 type serverCalls struct {
 	XormEngine *xorm.Engine
+	Locker     sync.Locker
 }
 
 type User struct {
@@ -25,12 +28,12 @@ type User struct {
 }
 
 type Tun struct {
-	ID        int64  `xorm:"pk"`                  // Tunnel ID
-	User      int64  `xorm:"notnull"`             // Agent ID
-	Token     []byte `xorm:"blob notnull unique"` // Tunnel Token
-	Proto     uint8  `xorm:"default 3"`           // Proto accept
-	TPCListen uint16 // Port listen TCP agent
-	UDPListen uint16 // Port listen UDP agent
+	ID        int64        `xorm:"pk"`                  // Tunnel ID
+	User      int64        `xorm:"notnull"`             // Agent ID
+	Token     []byte       `xorm:"blob notnull unique"` // Tunnel Token
+	Proto     proto.Protoc `xorm:"default 3"`           // Proto accept
+	TPCListen uint16       // Port listen TCP agent
+	UDPListen uint16       // Port listen UDP agent
 }
 
 type Ping struct {
@@ -53,7 +56,7 @@ type RTX struct {
 	Client netip.AddrPort
 	TXSize int
 	RXSize int
-	Proto  uint8
+	Proto  proto.Protoc
 }
 
 func NewCall(DBConn string) (call *serverCalls, err error) {
@@ -61,6 +64,7 @@ func NewCall(DBConn string) (call *serverCalls, err error) {
 	if call.XormEngine, err = xorm.NewEngine("sqlite", DBConn); err != nil {
 		return
 	}
+	call.Locker = &sync.Mutex{}
 	call.XormEngine.SetMapper(names.SameMapper{})
 	session := call.XormEngine.NewSession()
 	defer session.Close()
@@ -75,11 +79,13 @@ func NewCall(DBConn string) (call *serverCalls, err error) {
 type TunCallbcks struct {
 	tunID      int64
 	XormEngine *xorm.Engine
+	Locker     sync.Locker
 }
 
-func (tun *TunCallbcks) AgentShutdown(onTime time.Time) {}
-
+func (*TunCallbcks) AgentShutdown(onTime time.Time) {}
 func (tun *TunCallbcks) BlockedAddr(AddrPort string) bool {
+	tun.Locker.Lock()
+	defer tun.Locker.Unlock()
 	var addr = AddrBlocked{Address: AddrPort, TunID: tun.tunID}
 	ok, err := tun.XormEngine.Get(&addr)
 	if err != nil {
@@ -102,6 +108,8 @@ func (tun *TunCallbcks) BlockedAddr(AddrPort string) bool {
 }
 
 func (tun *TunCallbcks) AgentPing(agent, server time.Time) {
+	tun.Locker.Lock()
+	defer tun.Locker.Unlock()
 	c, _ := tun.XormEngine.Count(Ping{})
 	tun.XormEngine.InsertOne(&Ping{
 		ID:         c,
@@ -111,7 +119,9 @@ func (tun *TunCallbcks) AgentPing(agent, server time.Time) {
 	})
 }
 
-func (tun *TunCallbcks) RegisterRX(client netip.AddrPort, Size int, Proto uint8) {
+func (tun *TunCallbcks) RegisterRX(client netip.AddrPort, Size int, Proto proto.Protoc) {
+	tun.Locker.Lock()
+	defer tun.Locker.Unlock()
 	tun.XormEngine.InsertOne(&RTX{
 		TunID:  tun.tunID,
 		Client: client,
@@ -120,7 +130,9 @@ func (tun *TunCallbcks) RegisterRX(client netip.AddrPort, Size int, Proto uint8)
 		TXSize: 0,
 	})
 }
-func (tun *TunCallbcks) RegisterTX(client netip.AddrPort, Size int, Proto uint8) {
+func (tun *TunCallbcks) RegisterTX(client netip.AddrPort, Size int, Proto proto.Protoc) {
+	tun.Locker.Lock()
+	defer tun.Locker.Unlock()
 	tun.XormEngine.InsertOne(&RTX{
 		TunID:  tun.tunID,
 		Client: client,
@@ -142,6 +154,6 @@ func (caller *serverCalls) AgentAuthentication(Token []byte) (server.TunnelInfo,
 		Proto:     tun.Proto,
 		TCPPort:   tun.TPCListen,
 		UDPPort:   tun.UDPListen,
-		Callbacks: &TunCallbcks{tunID: tun.ID, XormEngine: caller.XormEngine},
+		Callbacks: &TunCallbcks{tunID: tun.ID, XormEngine: caller.XormEngine, Locker: caller.Locker},
 	}, nil
 }

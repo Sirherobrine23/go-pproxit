@@ -76,13 +76,13 @@ func (client *Client) Setup() error {
 }
 
 type toWr struct {
-	Proto uint8
+	Proto proto.Protoc
 	To    netip.AddrPort
 	tun   *Client
 }
 
 func (t toWr) Write(w []byte) (int, error) {
-	err := structcode.NewEncode(t.tun.Conn, proto.Request{
+	data := proto.Request{
 		DataTX: &proto.ClientData{
 			Data: w,
 			Client: proto.Client{
@@ -90,21 +90,23 @@ func (t toWr) Write(w []byte) (int, error) {
 				Proto:  t.Proto,
 			},
 		},
-	})
-	if err == nil {
-		return len(w), nil
 	}
-	return 0, err
+	d, _ := json.Marshal(data)
+	fmt.Println(string(d))
+	if err := structcode.NewEncode(t.tun.Conn, data); err != nil {
+		return 0, err
+	}
+	return len(w), nil
 }
 
-func (tun *Client) GetTargetWrite(Proto uint8, To netip.AddrPort) io.Writer {
+func (tun *Client) GetTargetWrite(Proto proto.Protoc, To netip.AddrPort) io.Writer {
 	return &toWr{Proto: Proto, To: To, tun: tun}
 }
 
 func (client *Client) handlers() {
-	var lastPing int64 = 0
+	var lastPing time.Time = time.Date(0, 0, 0, 0, 0, 0, 0, time.Local)
 	for {
-		if time.Now().UnixMilli()-lastPing > 3_000 {
+		if time.Now().UnixMilli()-lastPing.UnixMilli() > 3_000_000 {
 			var req proto.Request
 			req.Ping = new(time.Time)
 			*req.Ping = time.Now()
@@ -125,7 +127,7 @@ func (client *Client) handlers() {
 		fmt.Println(string(d))
 
 		if res.Pong != nil {
-			lastPing = res.Pong.UnixMilli()
+			lastPing = *res.Pong
 			continue
 		}
 		if res.Unauthorized || res.NotListened {

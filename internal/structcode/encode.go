@@ -39,6 +39,18 @@ func encodeRecursive(w io.Writer, reflectValue reflect.Value) error {
 	case reflect.Bool, reflect.Float32, reflect.Float64, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return binary.Write(w, binary.BigEndian, reflectValue.Interface())
 	case reflect.Interface:
+	case reflect.Map:
+		if err := binary.Write(w, binary.BigEndian, uint64(reflectValue.Len())); err != nil {
+			return err
+		}
+		inter := reflectValue.MapRange()
+		for inter.Next() {
+			if err := encodeRecursive(w, inter.Key()); err != nil {
+				return err
+			} else if err := encodeRecursive(w, inter.Value()); err != nil {
+				return err
+			}
+		}
 	case reflect.Struct:
 		if ok, err := encodeTypeof(w, reflectValue); ok {
 			return err

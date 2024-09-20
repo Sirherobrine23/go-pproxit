@@ -6,7 +6,7 @@ import (
 )
 
 type AgentInfo struct {
-	Protocol         uint8          // Proto supported (proto.ProtoTCP, proto.ProtoUDP or proto.ProtoBoth)
+	Protocol         Protoc         // Proto supported (proto.ProtoTCP, proto.ProtoUDP or proto.ProtoBoth)
 	UDPPort, TCPPort uint16         // Controller port listened
 	AddrPort         netip.AddrPort // request address and port
 }

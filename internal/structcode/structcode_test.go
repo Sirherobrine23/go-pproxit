@@ -2,8 +2,11 @@ package structcode
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
+	mathrand "math/rand/v2"
 	"net/netip"
 	"sync"
 	"testing"
@@ -12,7 +15,67 @@ import (
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
 
+type mapTest map[string]mapStr
+type mapStr struct {
+	Text string
+	Blob []byte
+}
+
+func randomBuff(size int) []byte {
+	buff := make([]byte, size)
+	_, err := rand.Read(buff)
+	if err != nil {
+		panic(err)
+	}
+	return buff
+}
+
 func TestSerelelize(t *testing.T) {
+	t.Run("Map", func(t *testing.T) {
+		var err error
+		var waiter sync.WaitGroup
+		var enc, dec mapTest
+		enc = mapTest{}
+		enc["Test"] = mapStr{"Golang is best", []byte{5, 14, 22, 13}}
+		for i := range mathrand.IntN(20) {
+			enc["Rand"+fmt.Sprint(i)] = mapStr{string(randomBuff(14)), randomBuff(64)}
+		}
+
+		waiter.Add(2)
+		r, w := io.Pipe()
+		go func() {
+			defer waiter.Done()
+			if err = NewDecode(r, &dec); err != nil {
+				t.Error(err)
+				return
+			}
+		}()
+		go func() {
+			defer waiter.Done()
+			if err = NewEncode(w, enc); err != nil {
+				t.Error(err)
+				return
+			}
+		}()
+		waiter.Wait()
+		if err != nil {
+			return
+		}
+		for k, v := range enc {
+			if d, ok := dec[k]; ok {
+				if v.Text != d.Text {
+					t.Errorf("text from decode not exists or mismatch (%q), Encode %q, Decode %q", k, v.Text, d.Text)
+					return
+				} else if !bytes.Equal(v.Blob, d.Blob) {
+					t.Errorf("blob from decode not exists or mismatch (%q), Encode %s, Decode %s", k, hex.EncodeToString(v.Blob), hex.EncodeToString(d.Blob))
+					return
+				}
+				continue
+			}
+			t.Errorf("key not exists in decode (%q)", k)
+			return
+		}
+	})
 	t.Run("Response", func(t *testing.T) {
 		var err error
 		var encodeRes, decodeRes proto.Response

@@ -64,6 +64,22 @@ func decodeRecursive(r io.Reader, reflectValue reflect.Value) error {
 		}
 		reflectValue.Set(reflect.ValueOf(data).Elem())
 	case reflect.Interface:
+	case reflect.Map:
+		mapTypeof := reflectValue.Type()
+		reflectValue.Set(reflect.MakeMap(mapTypeof))
+		var size uint64
+		if err := binary.Read(r, binary.BigEndian, &size); err != nil {
+			return err
+		}
+		for range size {
+			key, value := reflect.New(mapTypeof.Key()).Elem(), reflect.New(mapTypeof.Elem()).Elem()
+			if err := decodeRecursive(r, key); err != nil {
+				return err
+			} else if err := decodeRecursive(r, value); err != nil {
+				return err
+			}
+			reflectValue.SetMapIndex(key, value)
+		}
 	case reflect.Struct:
 		if ok, err := decodeTypeof(r, reflectValue); ok {
 			return err

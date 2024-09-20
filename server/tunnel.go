@@ -15,17 +15,17 @@ import (
 )
 
 type TunnelCall interface {
-	BlockedAddr(AddrPort string) bool                        // Ignore request from this address
-	AgentPing(agent, server time.Time)                       // Register ping to Agent
-	AgentShutdown(onTime time.Time)                          // Agend end connection
-	RegisterRX(client netip.AddrPort, Size int, Proto uint8) // Register Recived data from client
-	RegisterTX(client netip.AddrPort, Size int, Proto uint8) // Register Transmitted data from client
+	BlockedAddr(AddrPort string) bool                               // Ignore request from this address
+	AgentPing(agent, server time.Time)                              // Register ping to Agent
+	AgentShutdown(onTime time.Time)                                 // Agend end connection
+	RegisterRX(client netip.AddrPort, Size int, Proto proto.Protoc) // Register Recived data from client
+	RegisterTX(client netip.AddrPort, Size int, Proto proto.Protoc) // Register Transmitted data from client
 }
 
 type TunnelInfo struct {
-	Proto            uint8      // Protocol listen tunnel, use proto.ProtoTCP, proto.ProtoUDP or proto.ProtoBoth
-	UDPPort, TCPPort uint16     // Port to Listen UDP and TCP listeners
-	Callbacks        TunnelCall // Tunnel Callbacks
+	Proto            proto.Protoc // Protocol listen tunnel, use proto.ProtoTCP, proto.ProtoUDP or proto.ProtoBoth
+	UDPPort, TCPPort uint16       // Port to Listen UDP and TCP listeners
+	Callbacks        TunnelCall   // Tunnel Callbacks
 }
 
 type Tunnel struct {
@@ -65,7 +65,7 @@ func (tun *Tunnel) send(res proto.Response) error {
 }
 
 type toWr struct {
-	Proto uint8
+	Proto proto.Protoc
 	To    netip.AddrPort
 	tun   *Tunnel
 }
@@ -87,7 +87,7 @@ func (t toWr) Write(w []byte) (int, error) {
 	return 0, err
 }
 
-func (tun *Tunnel) GetTargetWrite(Proto uint8, To netip.AddrPort) io.Writer {
+func (tun *Tunnel) GetTargetWrite(Proto proto.Protoc, To netip.AddrPort) io.Writer {
 	return &toWr{Proto: Proto, To: To, tun: tun}
 }
 
@@ -124,7 +124,7 @@ func (tun *Tunnel) Setup() {
 			fmt.Fprintln(os.Stderr, err.Error())
 			return
 		}
-		d, _ := json.MarshalIndent(req, "", "  ")
+		d, _ := json.Marshal(req)
 		fmt.Println(string(d))
 
 		if req.AgentAuth != nil {
