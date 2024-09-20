@@ -18,6 +18,7 @@ package structcode
 
 import (
 	"encoding"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -34,11 +35,20 @@ var (
 	typeofBinMarshal    = reflect.TypeFor[encoding.BinaryMarshaler]()
 )
 
-func NewEncode(w io.Writer, target any) error {
+func NewEncode(w io.Writer, target any) (err error) {
 	if target == nil {
 		return nil
 	}
-
+	defer func() {
+		if ierr := recover(); ierr != nil {
+			switch v := ierr.(type) {
+			case error:
+				err = v
+			case string:
+				err = errors.New(v)
+			}
+		}
+	}()
 	reflectValue := reflect.ValueOf(target)
 	if reflectValue.Type().Kind() == reflect.Pointer {
 		reflectValue = reflectValue.Elem()
@@ -46,7 +56,17 @@ func NewEncode(w io.Writer, target any) error {
 	return encodeRecursive(w, reflectValue)
 }
 
-func NewDecode(r io.Reader, target any) error {
+func NewDecode(r io.Reader, target any) (err error) {
+	defer func() {
+		if ierr := recover(); ierr != nil {
+			switch v := ierr.(type) {
+			case error:
+				err = v
+			case string:
+				err = errors.New(v)
+			}
+		}
+	}()
 	if target == nil {
 		return fmt.Errorf("set target, not nil")
 	} else if reflect.TypeOf(target).Kind() != reflect.Pointer {

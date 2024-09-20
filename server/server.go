@@ -65,10 +65,10 @@ func (controller *Server) handlerConn(conn net.Conn) {
 				fmt.Fprintf(os.Stderr, "Auth decode error: %s\n", err.Error())
 			}
 			return
-		} else if req.AgentAuth == nil {
-			structcode.NewEncode(conn, proto.Response{SendAuth: true})
-			continue
-		} else if tunnelInfo, err = controller.ControlCalls.AgentAuthentication(*req.AgentAuth); err != nil {
+		}
+
+		
+		if tunnelInfo, err = controller.ControlCalls.AgentAuthentication(*req.AgentAuth); err != nil {
 			if err == ErrAuthAgentFail {
 				structcode.NewEncode(conn, proto.Response{Unauthorized: true})
 				return

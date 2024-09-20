@@ -8,7 +8,7 @@ import (
 )
 
 func TestClientServer(t *testing.T) {
-	calls, err := NewCall("./pproxit.db")
+	calls, err := NewCall()
 	if err != nil {
 		t.Error(err)
 		return

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"reflect"
 	"time"
 
 	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/internal/pipe"
@@ -52,8 +53,7 @@ type Client struct {
 	Latency  int64                   // Latency response in ms from last Pong
 
 	newListen chan remoteClient // new clients listener in Controller
-	cachErr   chan error        // Pipe errors to channel
-	closedErr bool
+	errListen chan error        // new clients listener in Controller
 }
 
 func NewClient(Address string, AuthToken []byte) (*Client, error) {
@@ -82,7 +82,7 @@ func NewClient(Address string, AuthToken []byte) (*Client, error) {
 		}
 	}
 
-	clientStr.cachErr = make(chan error)
+	clientStr.errListen = make(chan error)
 	clientStr.newListen = make(chan remoteClient)
 	clientStr.TCPConns = make(map[string]*net.TCPConn)
 	clientStr.UDPConns = make(map[string]*net.UDPConn)
@@ -90,25 +90,21 @@ func NewClient(Address string, AuthToken []byte) (*Client, error) {
 	return &clientStr, nil
 }
 
-// Wait for any error, if catch error close connection and return error
-func (client *Client) WaitCloseError() error {
-	if err, ok := <-client.cachErr; ok {
-		if err != nil && client.Conn != nil {
-			client.Close()
-		}
+// Wait for any error
+func (client *Client) WaitError() error {
+	if err, ok := <-client.errListen; ok {
 		return err
 	}
 	return io.EOF
 }
 
-// Wait for any error
-func (client *Client) WaitError() error {
-	if err, ok := <-client.cachErr; ok {
-		return err
-	} else if client.Conn == nil {
-		return io.EOF
+// Wait for any error, if catch error close connection and return error
+func (client *Client) WaitCloseError() error {
+	err := client.WaitError()
+	if err != nil && client.Conn != nil {
+		client.Close()
 	}
-	return nil
+	return err
 }
 
 // Close Clients and Controller connection
@@ -131,16 +127,18 @@ func (client *Client) Close() error {
 		}
 		client.Conn = nil
 	}
-	client.closedErr = true
-	close(client.cachErr)
+	close(client.newListen)
+	close(client.errListen)
 	return nil
 }
 
+// Send error to WaitError, if closed catcher and ignored
 func (client *Client) sendErr(err error) {
-	if client.closedErr {
+	if reflect.ValueOf(client.errListen).IsZero() {
 		return
 	}
-	client.cachErr <- err
+	defer func() { recover() }()
+	client.errListen <- err
 }
 
 // Send auth to controller

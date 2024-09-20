@@ -1,57 +1,53 @@
 package gopproxit_test
 
 import (
-	"fmt"
 	"net/netip"
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
 	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/proto"
 	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/server"
-	"xorm.io/xorm"
-	"xorm.io/xorm/names"
 )
 
 type serverCalls struct {
-	XormEngine *xorm.Engine
-	Locker     sync.Locker
+	Locker sync.Locker
+	Tables map[string]map[int64]any
 }
 
 type User struct {
-	ID            int64     `xorm:"pk"`                                // Client ID
-	Username      string    `xorm:"varchar(32) notnull unique 'user'"` // Username
-	FullName      string    `xorm:"text notnull notnull 'name'"`       // Real name for user
-	AccountStatus int8      `xorm:"BIT notnull 'status'"`              // Account Status
-	CreateAt      time.Time `xorm:"created"`                           // Create date
-	UpdateAt      time.Time `xorm:"updated"`                           // Update date
+	ID            int64     // Client ID
+	Username      string    // Username
+	FullName      string    // Real name for user
+	AccountStatus int8      // Account Status
+	CreateAt      time.Time // Create date
+	UpdateAt      time.Time // Update date
 }
 
 type Tun struct {
-	ID        int64        `xorm:"pk"`                  // Tunnel ID
-	User      int64        `xorm:"notnull"`             // Agent ID
-	Token     []byte       `xorm:"blob notnull unique"` // Tunnel Token
-	Proto     proto.Protoc `xorm:"default 3"`           // Proto accept
+	ID        int64        // Tunnel ID
+	User      int64        // Agent ID
+	Token     []byte       // Tunnel Token
+	Proto     proto.Protoc // Proto accept
 	TPCListen uint16       // Port listen TCP agent
 	UDPListen uint16       // Port listen UDP agent
 }
 
 type Ping struct {
-	ID         int64     `json:"-" xorm:"pk"` // Tunnel ID
+	ID         int64     `json:"-"` // Tunnel ID
 	TunID      int64     `json:"-"`
-	ServerTime time.Time `json:"server" xorm:"datetime notnull"`
-	AgentTime  time.Time `json:"agent" xorm:"datetime notnull"`
+	ServerTime time.Time `json:"server"`
+	AgentTime  time.Time `json:"agent"`
 }
 
 type AddrBlocked struct {
-	ID      int64 `json:"-" xorm:"pk"` // Tunnel ID
+	ID      int64 `json:"-"` // Tunnel ID
 	TunID   int64 `json:"-"`
 	Enabled bool
 	Address string
 }
 
 type RTX struct {
-	ID     int64 `json:"-" xorm:"pk"` // Tunnel ID
+	ID     int64 `json:"-"` // Tunnel ID
 	TunID  int64 `json:"-"`
 	Client netip.AddrPort
 	TXSize int
@@ -59,116 +55,53 @@ type RTX struct {
 	Proto  proto.Protoc
 }
 
-func NewCall(DBConn string) (call *serverCalls, err error) {
+func NewCall() (call *serverCalls, err error) {
 	call = new(serverCalls)
-	if call.XormEngine, err = xorm.NewEngine("sqlite", DBConn); err != nil {
-		return
-	}
 	call.Locker = &sync.Mutex{}
-	call.XormEngine.SetMapper(names.SameMapper{})
-	session := call.XormEngine.NewSession()
-	defer session.Close()
-	session.CreateTable(User{})
-	session.CreateTable(Tun{})
-	session.CreateTable(AddrBlocked{})
-	session.CreateTable(Ping{})
-	session.CreateTable(RTX{})
+	call.Tables = make(map[string]map[int64]any)
+	call.Tables["User"] = make(map[int64]any)
+	call.Tables["Tun"] = make(map[int64]any)
+	call.Tables["AddrBlocked"] = make(map[int64]any)
+	call.Tables["Ping"] = make(map[int64]any)
+	call.Tables["RTX"] = make(map[int64]any)
 	return
 }
 
 type TunCallbcks struct {
-	tunID      int64
-	XormEngine *xorm.Engine
-	Locker     sync.Locker
+	tunID  int64
+	Locker sync.Locker
 }
 
-func (*TunCallbcks) AgentShutdown(onTime time.Time) {}
-func (tun *TunCallbcks) BlockedAddr(AddrPort string) bool {
-	tun.Locker.Lock()
-	defer tun.Locker.Unlock()
-	var addr = AddrBlocked{Address: AddrPort, TunID: tun.tunID}
-	ok, err := tun.XormEngine.Get(&addr)
-	if err != nil {
-		fmt.Println(err)
-		return true
-	} else if ok {
-		return addr.Enabled
-	}
-	var addrs []AddrBlocked
-	if err := tun.XormEngine.Find(&addrs); err != nil {
-		fmt.Println(err)
-		return true
-	}
-	for ind := range addrs {
-		if addrs[ind].Enabled {
-			return true
-		}
-	}
-	return false
-}
-
-func (tun *TunCallbcks) AgentPing(agent, server time.Time) {
-	tun.Locker.Lock()
-	defer tun.Locker.Unlock()
-	c, _ := tun.XormEngine.Count(Ping{})
-	tun.XormEngine.InsertOne(&Ping{
-		ID:         c,
-		TunID:      tun.tunID,
-		ServerTime: server,
-		AgentTime:  agent,
-	})
-}
-
-func (tun *TunCallbcks) RegisterRX(client netip.AddrPort, Size int, Proto proto.Protoc) {
-	tun.Locker.Lock()
-	defer tun.Locker.Unlock()
-	tun.XormEngine.InsertOne(&RTX{
-		TunID:  tun.tunID,
-		Client: client,
-		Proto:  Proto,
-		RXSize: Size,
-		TXSize: 0,
-	})
-}
-func (tun *TunCallbcks) RegisterTX(client netip.AddrPort, Size int, Proto proto.Protoc) {
-	tun.Locker.Lock()
-	defer tun.Locker.Unlock()
-	tun.XormEngine.InsertOne(&RTX{
-		TunID:  tun.tunID,
-		Client: client,
-		Proto:  Proto,
-		TXSize: Size,
-		RXSize: 0,
-	})
-}
+func (tun *TunCallbcks) BlockedAddr(AddrPort string) bool                               { return false }
+func (*TunCallbcks) AgentShutdown(onTime time.Time)                                     {}
+func (tun *TunCallbcks) AgentPing(agent, server time.Time)                              {}
+func (tun *TunCallbcks) RegisterRX(client netip.AddrPort, Size int, Proto proto.Protoc) {}
+func (tun *TunCallbcks) RegisterTX(client netip.AddrPort, Size int, Proto proto.Protoc) {}
 
 func (caller *serverCalls) AgentAuthentication(Token []byte) (server.TunnelInfo, error) {
-	var tun = Tun{Token: Token}
-	if ok, err := caller.XormEngine.Get(&tun); err != nil || !ok {
-		if !ok {
-			return server.TunnelInfo{}, server.ErrAuthAgentFail
-		}
-		return server.TunnelInfo{}, err
+	for _, tunInfo := range caller.Tables["Tun"] {
+		return server.TunnelInfo{
+			Proto:   tunInfo.(Tun).Proto,
+			TCPPort: tunInfo.(Tun).TPCListen,
+			UDPPort: tunInfo.(Tun).UDPListen,
+			Callbacks: &TunCallbcks{
+				Locker: caller.Locker,
+				tunID:  tunInfo.(Tun).ID,
+			},
+		}, nil
 	}
-	return server.TunnelInfo{
-		Proto:     tun.Proto,
-		TCPPort:   tun.TPCListen,
-		UDPPort:   tun.UDPListen,
-		Callbacks: &TunCallbcks{tunID: tun.ID, XormEngine: caller.XormEngine, Locker: caller.Locker},
-	}, nil
+	return server.TunnelInfo{}, server.ErrAuthAgentFail
 }
 
 func (caller *serverCalls) RegisterRandomUser() []byte {
 	token := []byte{0, 0, 12, 14, 22, 89, 255, 81}
-	caller.XormEngine.Insert(
-		&User{ID: 0, AccountStatus: 1, FullName: "Radon user", Username: "random"},
-		&Tun{
-			User:      0,
-			Token:     token,
-			Proto:     proto.ProtoBoth,
-			TPCListen: 5522,
-			UDPListen: 5522,
-		},
-	)
+	caller.Tables["User"][0] = User{ID: 0, AccountStatus: 1, FullName: "Radon user", Username: "random"}
+	caller.Tables["Tun"][0] = Tun{
+		User:      0,
+		Token:     token,
+		Proto:     proto.ProtoBoth,
+		TPCListen: 5522,
+		UDPListen: 5522,
+	}
 	return token
 }
