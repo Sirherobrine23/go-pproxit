@@ -1,9 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -74,12 +74,11 @@ func (t toWr) Write(w []byte) (int, error) {
 	go t.tun.TunInfo.Callbacks.RegisterRX(t.To, len(w), t.Proto)
 	err := t.tun.send(proto.Response{
 		DataRX: &proto.ClientData{
+			Data: w,
 			Client: proto.Client{
 				Proto:  t.Proto,
 				Client: t.To,
 			},
-			Size: uint64(len(w)),
-			Data: w[:],
 		},
 	})
 	if err == nil {
@@ -120,12 +119,14 @@ func (tun *Tunnel) Setup() {
 	})
 
 	for {
-		log.Printf("waiting request from %s", tun.RootConn.RemoteAddr().String())
 		var req proto.Request
 		if err := structcode.NewDecode(tun.RootConn, &req); err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			return
 		}
+		d, _ := json.MarshalIndent(req, "", "  ")
+		fmt.Println(string(d))
+
 		if req.AgentAuth != nil {
 			go tun.send(proto.Response{
 				AgentInfo: &proto.AgentInfo{
@@ -151,7 +152,7 @@ func (tun *Tunnel) Setup() {
 				}
 			}
 		} else if data := req.DataTX; req.DataTX != nil {
-			go tun.TunInfo.Callbacks.RegisterTX(data.Client.Client, int(data.Size), data.Client.Proto)
+			go tun.TunInfo.Callbacks.RegisterTX(data.Client.Client, len(data.Data), data.Client.Proto)
 			if data.Client.Proto == proto.ProtoTCP {
 				if cl, ok := tun.TCPClients[data.Client.Client.String()]; ok {
 					go cl.Write(data.Data) // Process in backgroud

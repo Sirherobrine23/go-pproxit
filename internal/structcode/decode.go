@@ -5,19 +5,55 @@ import (
 	"encoding/binary"
 	"io"
 	"reflect"
-	"time"
 )
+
+func readBuff(r io.Reader) ([]byte, error) {
+	size := uint32(0)
+	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
+		return nil, err
+	}
+	buff := make([]byte, size)
+	_, err := r.Read(buff)
+	return buff, err
+}
+
+func decodeTypeof(r io.Reader, reflectValue reflect.Value) (bool, error) {
+	var data any
+	npoint := reflect.New(reflectValue.Type())
+	typeof := npoint.Type()
+	switch {
+	default:
+		return false, nil
+	case typeof.Implements(typeofBinUnmarshal), typeof.ConvertibleTo(typeofBinUnmarshal):
+		buff, err := readBuff(r)
+		if err != nil {
+			return true, err
+		}
+		t := npoint.Interface()
+		if err := t.(encoding.BinaryUnmarshaler).UnmarshalBinary(buff); err != nil {
+			return true, err
+		}
+		data = t
+	case typeof.Implements(typeofTextUnmarshal), typeof.ConvertibleTo(typeofTextUnmarshal):
+		buff, err := readBuff(r)
+		if err != nil {
+			return true, err
+		}
+		t := npoint.Interface()
+		if err := t.(encoding.TextUnmarshaler).UnmarshalText(buff); err != nil {
+			return true, err
+		}
+		data = t
+	}
+	reflectValue.Set(reflect.ValueOf(data).Elem())
+	return true, nil
+}
 
 func decodeRecursive(r io.Reader, reflectValue reflect.Value) error {
 	switch reflectValue.Type().Kind() {
-	case reflect.Interface:
 	case reflect.String:
-		size := int64(0)
-		if err := binary.Read(r, binary.BigEndian, &size); err != nil {
-			return err
-		}
-		buff := make([]byte, size)
-		if _, err := r.Read(buff); err != nil {
+		buff, err := readBuff(r)
+		if err != nil {
 			return err
 		}
 		reflectValue.SetString(string(buff))
@@ -27,55 +63,28 @@ func decodeRecursive(r io.Reader, reflectValue reflect.Value) error {
 			return err
 		}
 		reflectValue.Set(reflect.ValueOf(data).Elem())
+	case reflect.Interface:
 	case reflect.Struct:
-		if reflectValue.Type().ConvertibleTo(typeofTimer) || reflectValue.Type().Implements(typeofBinUnmarshal) || reflectValue.Type().Implements(typeofTextUnmarshal) {
-			size := int64(0)
-			if err := binary.Read(r, binary.BigEndian, &size); err != nil {
-				return err
-			}
-			buff := make([]byte, size)
-			if _, err := r.Read(buff); err != nil {
-				return err
-			} else if reflectValue.Type().ConvertibleTo(typeofTimer) {
-				ttime := reflectValue.Interface().(time.Time)
-				if err := ttime.UnmarshalBinary(buff); err != nil {
-					return err
-				}
-				reflectValue.Set(reflect.ValueOf(ttime))
-				return nil
-			} else if reflectValue.Type().Implements(typeofBinUnmarshal) {
-				data := reflectValue.Interface().(encoding.BinaryUnmarshaler)
-				if err := data.UnmarshalBinary(buff); err != nil {
-					return err
-				}
-				reflectValue.Set(reflect.ValueOf(data))
-				return nil
-			}
-			data := reflectValue.Interface().(encoding.TextUnmarshaler)
-			if err := data.UnmarshalText(buff); err != nil {
-				return err
-			}
-			reflectValue.Set(reflect.ValueOf(data))
-			return nil
+		if ok, err := decodeTypeof(r, reflectValue); ok {
+			return err
 		}
-
 		typeof := reflectValue.Type()
 		for fieldIndex := range typeof.NumField() {
-			if typeof.Field(fieldIndex).Tag.Get(selectorTagName) == "-" || !typeof.Field(fieldIndex).IsExported() {
+			fieldType := typeof.Field(fieldIndex)
+			if fieldType.Tag.Get(selectorTagName) == "-" || !fieldType.IsExported() {
 				continue
 			} else if err := decodeRecursive(r, reflectValue.Field(fieldIndex)); err != nil {
 				return err
 			}
 		}
 	case reflect.Pointer:
-		read := int8(0)
+		var read bool
 		if err := binary.Read(r, binary.BigEndian, &read); err != nil {
 			return err
-		} else if read == 0 {
-			return nil
+		} else if read {
+			reflectValue.Set(reflect.New(reflectValue.Type().Elem()))
+			return decodeRecursive(r, reflectValue.Elem())
 		}
-		reflectValue.Set(reflect.New(reflectValue.Type().Elem()))
-		return decodeRecursive(r, reflectValue.Elem())
 	case reflect.Array:
 		for arrIndex := range reflectValue.Len() {
 			if err := decodeRecursive(r, reflectValue.Index(arrIndex)); err != nil {
@@ -83,24 +92,25 @@ func decodeRecursive(r io.Reader, reflectValue reflect.Value) error {
 			}
 		}
 	case reflect.Slice:
-		size := int64(0)
-		if err := binary.Read(r, binary.BigEndian, &size); err != nil {
-			return err
-		} else if reflectValue.Type().Elem().Kind() == typeofByte.Kind() {
-			buff := make([]byte, size)
-			if _, err = r.Read(buff); err != nil {
+		if reflectValue.Type().ConvertibleTo(typeofBytes) {
+			buff, err := readBuff(r)
+			if err != nil {
 				return err
 			}
 			reflectValue.SetBytes(buff)
-		} else {
-			typeof := reflectValue.Type().Elem()
-			for range size {
-				newData := reflect.New(typeof)
-				if err := decodeRecursive(r, newData); err != nil {
-					return err
-				}
-				reflectValue.Set(reflect.AppendSlice(reflectValue, newData.Elem()))
+			return nil
+		}
+		size := int64(0)
+		if err := binary.Read(r, binary.BigEndian, &size); err != nil {
+			return err
+		}
+		typeof := reflectValue.Type().Elem()
+		for range size {
+			newData := reflect.New(typeof)
+			if err := decodeRecursive(r, newData); err != nil {
+				return err
 			}
+			reflectValue.Set(reflect.AppendSlice(reflectValue, newData.Elem()))
 		}
 	}
 	return nil

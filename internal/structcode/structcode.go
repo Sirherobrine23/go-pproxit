@@ -21,20 +21,17 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"time"
 )
 
 const selectorTagName = "ser"
 
 var (
-	typeofTimer = reflect.TypeFor[time.Time]()
-	typeofBytes = reflect.TypeOf([]byte{})
-	typeofByte  = typeofBytes.Elem()
+	typeofBytes = reflect.TypeFor[[]byte]()
 
-	typeofBinMarshal    = reflect.TypeFor[encoding.BinaryMarshaler]()
-	typeofTextMarshal   = reflect.TypeFor[encoding.TextMarshaler]()
-	typeofBinUnmarshal  = reflect.TypeFor[encoding.BinaryUnmarshaler]()
 	typeofTextUnmarshal = reflect.TypeFor[encoding.TextUnmarshaler]()
+	typeofBinUnmarshal  = reflect.TypeFor[encoding.BinaryUnmarshaler]()
+	typeofTextMarshal   = reflect.TypeFor[encoding.TextMarshaler]()
+	typeofBinMarshal    = reflect.TypeFor[encoding.BinaryMarshaler]()
 )
 
 func NewEncode(w io.Writer, target any) error {

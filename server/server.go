@@ -12,9 +12,7 @@ import (
 	"sirherobrine23.org/Minecraft-Server/go-pproxit/proto"
 )
 
-var (
-	ErrAuthAgentFail error = errors.New("cannot authenticate agent") // Send unathorized client and close new accepts from current port
-)
+var ErrAuthAgentFail error = errors.New("cannot authenticate agent") // Send unathorized client and close new accepts from current port
 
 type ServerCall interface {
 	// Authenticate agents

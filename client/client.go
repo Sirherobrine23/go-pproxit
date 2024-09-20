@@ -84,12 +84,11 @@ type toWr struct {
 func (t toWr) Write(w []byte) (int, error) {
 	err := structcode.NewEncode(t.tun.Conn, proto.Request{
 		DataTX: &proto.ClientData{
+			Data: w,
 			Client: proto.Client{
 				Client: t.To,
 				Proto:  t.Proto,
 			},
-			Size: uint64(len(w)),
-			Data: w[:],
 		},
 	})
 	if err == nil {

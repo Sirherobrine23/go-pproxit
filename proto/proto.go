@@ -26,6 +26,5 @@ type Client struct {
 
 type ClientData struct {
 	Client Client // Client Destination
-	Size   uint64 // Data size
 	Data   []byte `json:"-"` // Bytes to send
 }
