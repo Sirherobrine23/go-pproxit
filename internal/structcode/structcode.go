@@ -27,6 +27,7 @@ import (
 const selectorTagName = "ser"
 
 var (
+	typeofError = reflect.TypeFor[error]()
 	typeofBytes = reflect.TypeFor[[]byte]()
 
 	typeofTextUnmarshal = reflect.TypeFor[encoding.TextUnmarshaler]()

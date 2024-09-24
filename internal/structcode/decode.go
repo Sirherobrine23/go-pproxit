@@ -24,6 +24,9 @@ func decodeTypeof(r io.Reader, reflectValue reflect.Value) (bool, error) {
 	switch {
 	default:
 		return false, nil
+	case reflectValue.Type().Implements(typeofError), reflectValue.Type().ConvertibleTo(typeofError):
+		readBuff(r) // Read buff and ignore
+		return false, nil
 	case typeof.Implements(typeofBinUnmarshal), typeof.ConvertibleTo(typeofBinUnmarshal):
 		buff, err := readBuff(r)
 		if err != nil {

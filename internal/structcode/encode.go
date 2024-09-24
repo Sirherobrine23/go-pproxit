@@ -25,6 +25,8 @@ func encodeTypeof(w io.Writer, reflectValue reflect.Value) (bool, error) {
 		data, err = reflectValue.Interface().(encoding.BinaryMarshaler).MarshalBinary()
 	case reflectValue.Type().Implements(typeofTextMarshal), reflectValue.Type().ConvertibleTo(typeofTextMarshal):
 		data, err = reflectValue.Interface().(encoding.TextMarshaler).MarshalText()
+	case reflectValue.Type().Implements(typeofError), reflectValue.Type().ConvertibleTo(typeofError):
+		data = []byte(reflectValue.Interface().(error).Error())
 	}
 	if err == nil {
 		err = writeBuff(w, data)

@@ -138,7 +138,7 @@ func TestSerelelize(t *testing.T) {
 	t.Run("Request", func(t *testing.T) {
 		var err error
 		var encodeRequest, decodeRequest proto.Request
-		encodeRequest.AgentAuth = &[]byte{0, 0, 1, 1, 1, 1, 1, 0, 255}
+		encodeRequest.AgentAuth = []byte{0, 0, 1, 1, 1, 1, 1, 0, 255}
 		encodeRequest.Ping = new(time.Time)
 		*encodeRequest.Ping = time.Now()
 
@@ -165,8 +165,8 @@ func TestSerelelize(t *testing.T) {
 		} else if decodeRequest.Ping.Unix() != encodeRequest.Ping.Unix() {
 			t.Errorf("cannot decode/encode Ping date, Decode %d, Encode: %d", decodeRequest.Ping.Unix(), encodeRequest.Ping.Unix())
 			return
-		} else if !bytes.Equal(*decodeRequest.AgentAuth, *encodeRequest.AgentAuth) {
-			t.Errorf("cannot decode/encode auth data, Decode %q, Encode: %q", hex.EncodeToString(*decodeRequest.AgentAuth), hex.EncodeToString(*encodeRequest.AgentAuth))
+		} else if !bytes.Equal(decodeRequest.AgentAuth, encodeRequest.AgentAuth) {
+			t.Errorf("cannot decode/encode auth data, Decode %q, Encode: %q", hex.EncodeToString(decodeRequest.AgentAuth), hex.EncodeToString(encodeRequest.AgentAuth))
 			return
 		}
 	})
