@@ -6,8 +6,8 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/netip"
 	"sync"
+	"time"
 
 	"sirherobrine23.com.br/Minecraft-Server/go-pproxit/internal/pipe"
 )
@@ -25,6 +25,7 @@ type client struct {
 	fromAgent, toClient net.Conn
 	bufferCache         *bytes.Buffer
 	bufioCache          *bufio.Reader
+	LastPing            time.Time
 }
 
 type UDPServer struct {
@@ -35,6 +36,29 @@ type UDPServer struct {
 
 	closed bool
 	rw     sync.RWMutex
+}
+
+func ListenUDP(network string, laddr *net.UDPAddr) (*UDPServer, error) {
+	conn, err := net.ListenUDP(network, laddr)
+	if err != nil {
+		return nil, err
+	}
+	var root = &UDPServer{
+		rootUdp:   conn,
+		peers:     make(map[string]*client),
+		newPeer:   make(chan net.Conn),
+		peerError: make(chan error),
+	}
+	go root.handler()
+	return root, nil
+}
+
+func Listen(Network, address string) (net.Listener, error) {
+	ip, err := net.ResolveUDPAddr(Network, address)
+	if err != nil {
+		return nil, err
+	}
+	return ListenUDP(Network, ip)
 }
 
 // Local address
@@ -69,17 +93,23 @@ func (udpListen *UDPServer) Accept() (peer net.Conn, err error) {
 }
 
 func (udpListen *UDPServer) handler() {
+	buff := make([]byte, 32*1024)
 	for {
-		buff := make([]byte, 1480)
 		n, from, err := udpListen.rootUdp.ReadFromUDP(buff)
 		if err != nil {
 			return
 		}
 
 		udpListen.rw.Lock()
+		if nt, exist := udpListen.peers[from.String()]; exist {
+			if (time.Now().UnixMicro() - nt.LastPing.UnixMicro()) > 100_000_000 {
+				delete(udpListen.peers, from.String())
+			}
+		}
+
 		if _, exist := udpListen.peers[from.String()]; !exist {
 			c := new(client)
-
+			c.LastPing = time.Now()
 			c.bufferCache = new(bytes.Buffer)
 			c.bufioCache = bufio.NewReader(c.bufferCache)
 
@@ -106,31 +136,4 @@ func (udpListen *UDPServer) handler() {
 		udpListen.peers[from.String()].bufferCache.Write(buff[:n])
 		udpListen.rw.RUnlock()
 	}
-}
-
-func listenRoot(network string, laddr *net.UDPAddr) (net.Listener, error) {
-	conn, err := net.ListenUDP(network, laddr)
-	if err != nil {
-		return nil, err
-	}
-	var root = &UDPServer{
-		rootUdp:   conn,
-		peers:     make(map[string]*client),
-		newPeer:   make(chan net.Conn),
-		peerError: make(chan error),
-	}
-	go root.handler()
-	return root, nil
-}
-
-func ListenAddrPort(Network string, address netip.AddrPort) (net.Listener, error) {
-	return listenRoot(Network, net.UDPAddrFromAddrPort(address))
-}
-
-func Listen(Network, address string) (net.Listener, error) {
-	ip, err := net.ResolveUDPAddr(Network, address)
-	if err != nil {
-		return nil, err
-	}
-	return listenRoot(Network, ip)
 }
